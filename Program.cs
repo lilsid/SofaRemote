@@ -1,0 +1,980 @@
+﻿using System;
+using System.Drawing;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Drawing.Imaging;
+using System.Drawing.Drawing2D;
+using QRCoder;
+using System.Diagnostics;
+using System.Linq;
+using Windows.Media.Control;
+using Windows.Storage.Streams;
+
+static class Program
+{
+  private const string AppVersion = "2025.12.24.1";
+    private const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
+    private const byte VK_VOLUME_UP = 0xAF;
+    private const byte VK_VOLUME_DOWN = 0xAE;
+    private const byte VK_VOLUME_MUTE = 0xAD;
+    private const ushort VK_LEFT = 0x25;
+    private const ushort VK_RIGHT = 0x27;
+    private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint KEYEVENTF_SCANCODE = 0x0008;
+
+    // Extended scancodes for arrows (E0 prefix): Left=0x4B, Right=0x4D
+    private const ushort SC_LEFT = 0x4B;
+    private const ushort SC_RIGHT = 0x4D;
+
+    private static NotifyIcon? _tray;
+    private static CancellationTokenSource? _cts;
+    private static string? _logFilePath;
+    private static string? _primaryUrl;
+    private static string[]? _allUrls;
+
+    private static readonly string IndexHtml = @"<!doctype html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width,initial-scale=1'>
+  <title>Sofa Remote</title>
+  <link rel='manifest' href='/manifest.webmanifest?v=" + AppVersion + @"'>
+  <meta name='theme-color' content='#101822'>
+  <meta name='apple-mobile-web-app-capable' content='yes'>
+  <meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>
+  <link rel='apple-touch-icon' href='/icon-192.png?v=" + AppVersion + @"'>
+  <style>
+    :root{--primary:#1976d2;--surface:#1e293b;--on-surface:#f1f5f9;--muted:#94a3b8;--success:#10b981}
+    *{box-sizing:border-box;user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none}
+    html,body{height:100%;margin:0;font-family:Roboto,Segoe UI,Arial,sans-serif;background:#0f172a;color:var(--on-surface);overflow:hidden;position:fixed;width:100%;touch-action:pan-y}
+    .wrap{max-width:500px;margin:0 auto;padding:20px;position:relative}
+    .title{text-align:center;font-size:24px;margin-bottom:30px;font-weight:500;letter-spacing:0.5px;animation:fadeIn 0.4s ease-out}
+    .app-icon{font-size:48px;margin-bottom:8px}
+    .conn-status{text-align:center;margin-top:20px;padding:12px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:13px;color:var(--muted)}
+    .conn-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#ef4444;transition:all 0.3s;box-shadow:0 0 8px rgba(239,68,68,0.6)}
+    .conn-dot.connected{background:#10b981;box-shadow:0 0 12px rgba(16,185,129,0.8),0 0 20px rgba(16,185,129,0.4)}
+    .disconnected-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(8px)}
+    .disconnected-overlay.show{display:flex}
+    .disconnected-card{background:linear-gradient(135deg, #1e293b 0%, #334155 100%);padding:40px 32px;border-radius:20px;text-align:center;max-width:320px;box-shadow:0 20px 60px rgba(0,0,0,0.6),0 0 1px rgba(255,255,255,0.1) inset;animation:slideUp 0.4s ease-out;border:1px solid rgba(255,255,255,0.05)}
+    .disconnected-icon{font-size:64px;margin-bottom:20px;animation:pulse 2s ease-in-out infinite;filter:drop-shadow(0 4px 12px rgba(239,68,68,0.4))}
+    .disconnected-title{font-size:22px;font-weight:600;margin-bottom:12px;color:#f1f5f9;letter-spacing:0.3px}
+    .disconnected-msg{font-size:14px;color:#94a3b8;line-height:1.6;font-weight:400}
+    @keyframes slideUp{from{opacity:0;transform:translateY(20px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+    .install-popup{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:1001;backdrop-filter:blur(8px)}
+    .install-popup.show{display:flex}
+    .install-card{background:linear-gradient(135deg,#1e293b 0%,#334155 100%);padding:32px 24px;border-radius:20px;text-align:center;max-width:320px;box-shadow:0 20px 60px rgba(0,0,0,0.6);animation:slideUp 0.4s ease-out;border:1px solid rgba(255,255,255,0.05)}
+    .install-title{font-size:20px;font-weight:600;margin-bottom:16px;color:#f1f5f9;letter-spacing:0.3px}
+    .install-msg{font-size:14px;color:#cbd5e1;line-height:1.7;margin-bottom:24px}
+    .install-close-btn{width:100%;padding:12px;background:linear-gradient(135deg,#1976d2,#1565c0);color:white;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(25,118,210,0.4);transition:all 0.2s}
+    .install-close-btn:active{transform:scale(0.96);box-shadow:0 2px 8px rgba(25,118,210,0.3)}
+    .tile{background:var(--surface);color:var(--on-surface);border:0;border-radius:12px;height:110px;display:flex;align-items:center;justify-content:center;flex-direction:column;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:all 0.2s cubic-bezier(0.4,0,0.2,1);cursor:pointer;position:relative;overflow:hidden}
+    .tile .icon{font-size:36px;margin-bottom:4px;transition:transform 0.2s}
+    .tile .label{font-size:13px;opacity:.9;font-weight:500;letter-spacing:0.3px}
+    .tile:active{transform:scale(0.96);box-shadow:0 1px 4px rgba(0,0,0,0.4)}
+    .tile:active .icon{transform:scale(1.1)}
+    .tile.pulse{animation:pulse 0.3s ease-out}
+    .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,0.3);transform:scale(0);animation:ripple 0.6s ease-out;pointer-events:none}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:20px}
+    .grid .tile.full-width{grid-column:1 / -1}
+    .status{margin-top:16px;text-align:center;color:var(--muted);font-size:12px;transition:color 0.3s,transform 0.3s;min-height:18px}
+    .status.success{color:var(--success);transform:scale(1.05)}
+    .install-btn{margin:20px auto;padding:14px 28px;background:linear-gradient(135deg,#1976d2,#1565c0);color:white;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(25,118,210,0.4);transition:all 0.3s;display:none}
+    .install-btn:active{transform:scale(0.96);box-shadow:0 2px 8px rgba(25,118,210,0.3)}
+    .install-btn span{display:flex;align-items:center;justify-content:center;gap:8px}
+    .ios-hint{margin:16px auto;padding:12px 20px;background:rgba(25,118,210,0.15);border:1px solid rgba(25,118,210,0.3);border-radius:10px;color:var(--on-surface);font-size:13px;text-align:center;max-width:320px;line-height:1.6}
+    .page{animation:fadeIn 0.4s ease-out}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(0.95)}}
+    @keyframes ripple{to{transform:scale(4);opacity:0}}
+    @media (max-width:420px){.tile{height:100px}}
+  </style>
+</head>
+<body>
+  <div class='wrap'>
+    <div class='page'>
+      <div class='title'>
+        <div class='app-icon'>
+          <svg width='48' height='48' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'>
+            <circle cx='32' cy='32' r='30' fill='#1976d2'/>
+            <g fill='#ff6b6b'>
+              <rect x='15' y='25' width='34' height='3' rx='1.5'/>
+              <rect x='16' y='28' width='32' height='10' rx='2'/>
+              <rect x='14' y='25' width='4' height='15' rx='2'/>
+              <rect x='46' y='25' width='4' height='15' rx='2'/>
+            </g>
+            <g fill='#34495e'>
+              <rect x='35' y='35' width='11' height='21' rx='2'/>
+              <circle cx='40.5' cy='42' r='2' fill='#3498db'/>
+              <circle cx='37' cy='48' r='1.2' fill='#e0e0e0'/>
+              <circle cx='40.5' cy='48' r='1.2' fill='#e0e0e0'/>
+              <circle cx='44' cy='48' r='1.2' fill='#e0e0e0'/>
+            </g>
+          </svg>
+        </div>
+        <div>Sofa Remote</div>
+      </div>
+      
+      <div class='grid'>
+        <button id='fullscreen' class='tile' aria-label='Enter Fullscreen'><div class='icon'>⛶</div><div class='label'>Enter Full</div></button>
+        <button id='exitfullscreen' class='tile' aria-label='Exit Fullscreen'><div class='icon'>⎋</div><div class='label'>Exit Full</div></button>
+
+        <button id='voldown' class='tile' aria-label='Volume Down'><div class='icon'>🔉</div><div class='label'>Volume -</div></button>
+        <button id='volup' class='tile' aria-label='Volume Up'><div class='icon'>🔊</div><div class='label'>Volume +</div></button>
+
+        <button id='mute' class='tile full-width' aria-label='Mute'><div class='icon'>🔇</div><div class='label'>Mute</div></button>
+
+        <button id='play' class='tile full-width' aria-label='Play/Pause'><div class='icon'>⏯</div><div class='label'>Play / Pause</div></button>
+
+        <button id='back' class='tile' aria-label='Rewind'><div class='icon'>⏪</div><div class='label'>Backward</div></button>
+        <button id='forward' class='tile' aria-label='Forward'><div class='icon'>⏩</div><div class='label'>Forward</div></button>
+      </div>
+
+      <div id='status' class='status'>Ready</div>
+      <div class='conn-status'>
+        <span id='conn-dot' class='conn-dot'></span>
+        <span id='conn-text'>Connecting...</span>
+      </div>
+    </div>
+  </div>
+
+  <div id='disconnected-overlay' class='disconnected-overlay'>
+    <div class='disconnected-card'>
+      <div class='disconnected-icon'>⚠</div>
+      <div class='disconnected-title'>Server Disconnected</div>
+      <div class='disconnected-msg'>Please check if the app is running on your PC</div>
+    </div>
+  </div>
+  <div id='install-popup' class='install-popup'>
+    <div class='install-card'>
+      <div class='install-title'>Install Sofa Remote</div>
+      <div class='install-msg' id='install-msg'></div>
+      <button id='install-close' class='install-close-btn'>Got it!</button>
+    </div>
+  </div>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js?v=" + AppVersion + @"').then(reg => {
+        reg.update();
+      }).catch(()=>{});
+      
+      // Clear old service workers
+      navigator.serviceWorker.getRegistrations().then(regs => {
+        regs.forEach(reg => {
+          if(reg.active && !reg.active.scriptURL.includes('" + AppVersion + @"')){
+            reg.unregister();
+          }
+        });
+      });
+    }
+
+    const lastSent = {};
+    let wakeLock = null;
+    let noSleepEnabled = false;
+
+    function keepScreenOn(){
+      if(noSleepEnabled) return;
+      
+      // Modern browsers (Android)
+      if('wakeLock' in navigator && !wakeLock){
+        navigator.wakeLock.request('screen')
+          .then(lock => {
+            wakeLock = lock;
+            noSleepEnabled = true;
+            console.log('Wake lock active');
+          })
+          .catch(err => console.log('Wake lock error:', err));
+      }
+      
+      // iOS fallback - silent audio loop
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if(isIOS && !noSleepEnabled){
+        const audio = document.createElement('audio');
+        audio.loop = true;
+        audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+        audio.play().then(() => {
+          noSleepEnabled = true;
+          console.log('iOS NoSleep active');
+        }).catch(e => console.log('Audio error:', e));
+      }
+    }
+
+    function createRipple(e){
+      const btn = e.currentTarget;
+      const ripple = document.createElement('span');
+      ripple.classList.add('ripple');
+      const rect = btn.getBoundingClientRect();
+      const size = Math.max(rect.width,rect.height);
+      ripple.style.width = ripple.style.height = size + 'px';
+      ripple.style.left = (e.clientX - rect.left - size/2) + 'px';
+      ripple.style.top = (e.clientY - rect.top - size/2) + 'px';
+      btn.appendChild(ripple);
+      setTimeout(()=>ripple.remove(),600);
+    }
+
+    async function doPost(path){
+      try{
+        const now = Date.now();
+        if(lastSent[path] && now - lastSent[path] < 400) return;
+        lastSent[path] = now;
+        const r = await fetch(path,{method:'POST'});
+        if(!r.ok){
+          const t = await r.text().catch(()=>null);
+          throw new Error(r.status + (t ? ' ' + t : ''));
+        }
+        setStatus('✓ ' + path.replace('/',''), true);
+      }catch(e){
+        const msg = (e && e.message) ? e.message : String(e);
+        setStatus('✗ ' + path.replace('/','') + ': ' + msg, false);
+        console.debug('doPost error', e);
+      }
+    }
+
+    function setStatus(s, success){
+      const el=document.getElementById('status');
+      try{ 
+        el.textContent=s;
+        if(success){el.classList.add('success');}
+        else{el.classList.remove('success');}
+      }catch{}
+      setTimeout(()=>{ try{ el.textContent='Ready'; el.classList.remove('success'); }catch{} }, 1400);
+    }
+
+    document.getElementById('play').onclick=()=>doPost('/playpause');
+    document.getElementById('mute').onclick=()=>doPost('/mute');
+    document.getElementById('volup').onclick=()=>doPost('/volup');
+    document.getElementById('voldown').onclick=()=>doPost('/voldown');
+    document.getElementById('forward').onclick=()=>doPost('/forward');
+    document.getElementById('back').onclick=()=>doPost('/backward');
+    document.getElementById('fullscreen').onclick=()=>doPost('/fullscreen');
+    document.getElementById('exitfullscreen').onclick=()=>doPost('/exitfullscreen');
+
+    const connDot = document.getElementById('conn-dot');
+    const connText = document.getElementById('conn-text');
+    const overlay = document.getElementById('disconnected-overlay');
+    const installModal = document.getElementById('install-modal');
+
+    // Check if running in standalone mode (already installed)
+    const isInstalled = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    const installPopup = document.getElementById('install-popup');
+    const installMsg = document.getElementById('install-msg');
+    const installClose = document.getElementById('install-close');
+    
+    installClose.addEventListener('click', () => installPopup.classList.remove('show'));
+    
+    if (!isInstalled) {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      
+      if (isIOS) {
+        installMsg.innerHTML = '<strong>1.</strong> Tap <strong>Share &#8593;</strong><br><strong>2.</strong> Select <strong>Add to Home Screen</strong><br><strong>3.</strong> Tap <strong>Add</strong>';
+        setTimeout(() => installPopup.classList.add('show'), 1000);
+      } else {
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+          e.preventDefault();
+          deferredPrompt = e;
+          installMsg.innerHTML = 'Tap below to install Sofa Remote';
+          installClose.textContent = 'Install Now';
+          installClose.addEventListener('click', async () => {
+            if (deferredPrompt) {
+              deferredPrompt.prompt();
+              deferredPrompt = null;
+            }
+          }, { once: true });
+          setTimeout(() => installPopup.classList.add('show'), 1000);
+        });
+      }
+    }
+
+    function checkConnection(){
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
+      fetch('/health', { signal: controller.signal })
+        .then(()=>{ 
+          clearTimeout(timeoutId); 
+          connDot.classList.add('connected'); 
+          connText.textContent = 'Connected to server';
+          overlay.classList.remove('show');
+        })
+        .catch(()=>{ 
+          clearTimeout(timeoutId); 
+          connDot.classList.remove('connected'); 
+          connText.textContent = 'Disconnected';
+          overlay.classList.add('show');
+        });
+    }
+    checkConnection();
+    setInterval(checkConnection, 3000);
+
+    Array.from(document.querySelectorAll('button')).forEach(b=>{
+      b.addEventListener('click', createRipple);
+      b.addEventListener('touchstart', e=>{
+        if(b.disabled) return;
+        keepScreenOn();
+        const touch = e.touches[0];
+        const fakeEvent = {currentTarget:b, clientX:touch.clientX, clientY:touch.clientY};
+        createRipple(fakeEvent);
+        b.classList.add('pulse');
+        setTimeout(()=>b.classList.remove('pulse'),300);
+      });
+      b.addEventListener('touchend', e=>{
+        e.preventDefault();
+        if(b.disabled) return;
+        b.click();
+        b.disabled = true;
+        setTimeout(()=>{ try{ b.disabled = false }catch{} }, 500);
+      });
+    });
+  </script>
+</body>
+</html>";
+
+    [STAThread]
+    static void Main()
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+
+        _cts = new CancellationTokenSource();
+        _logFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SofaRemote", "sofa_remote.log");
+        try { Directory.CreateDirectory(Path.GetDirectoryName(_logFilePath)!); } catch { }
+
+        Icon? trayIcon = null;
+        try
+        {
+            var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icons", "app.ico");
+            if (File.Exists(iconPath))
+                trayIcon = new Icon(iconPath);
+        }
+        catch { }
+
+        _tray = new NotifyIcon
+        {
+            Text = "Sofa Remote",
+            Icon = trayIcon ?? SystemIcons.Application,
+            Visible = true
+        };
+        var menu = new ContextMenuStrip();
+        var showQrItem = new ToolStripMenuItem("Show QR", null, (_, __) => { try { ShowQrWindow(); } catch { } });
+        var restartAdminItem = new ToolStripMenuItem("Restart as Admin (Fix LAN)", null, (_, __) => { try { RestartElevated(); } catch { } });
+        var exitItem = new ToolStripMenuItem("Exit", null, (_, __) => { try { _cts!.Cancel(); } catch { } Application.Exit(); });
+        menu.Items.Add(showQrItem);
+        menu.Items.Add(restartAdminItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(exitItem);
+        _tray.ContextMenuStrip = menu;
+        _tray.MouseClick += (_, e) =>
+        {
+          if (e.Button == MouseButtons.Left)
+          {
+            try { ShowQrWindow(); } catch { }
+          }
+        };
+
+        Task.Run(() => RunServerAsync(_cts.Token));
+        Application.Run();
+
+        try { _tray.Visible = false; _tray.Dispose(); } catch { }
+    }
+
+    private static async Task RunServerAsync(CancellationToken token)
+    {
+        var ips = new System.Collections.Generic.List<string>(GetLocalIPv4Addresses());
+        var best = GetBestLocalAddress(ips);
+        _primaryUrl = best != null ? $"http://{best}:8080/" : "http://localhost:8080/";
+        _allUrls = new System.Collections.Generic.List<string> { "http://localhost:8080/" }
+          .Concat(ips.ConvertAll(ip => $"http://{ip}:8080/")).ToArray();
+
+        HttpListener listener = new HttpListener();
+        // Attempt 1: wildcard binding (restores prior behavior if URLACL exists)
+        try
+        {
+          listener.Prefixes.Add("http://+:8080/");
+          listener.Start();
+          Log("Listening on: http://+:8080/ (wildcard)");
+        }
+        catch (Exception exWildcard)
+        {
+          try { Log("Wildcard listen failed: " + exWildcard.Message); } catch { }
+          try { listener.Close(); } catch { }
+
+          // Attempt to auto-fix permissions via elevation (URLACL + firewall), then retry wildcard once
+          if (TryEnsureNetworkPermissions())
+          {
+            try
+            {
+              listener = new HttpListener();
+              listener.Prefixes.Add("http://+:8080/");
+              listener.Start();
+              Log("Listening on: http://+:8080/ (wildcard after ACL)");
+            }
+            catch (Exception exWildcard2)
+            {
+              try { Log("Wildcard still failed after ACL: " + exWildcard2.Message); } catch { }
+              try { listener.Close(); } catch { }
+            }
+          }
+
+          // Attempt 2: explicit localhost + each IP
+          listener = new HttpListener();
+          var prefixes = new System.Collections.Generic.List<string> { "http://localhost:8080/" };
+          foreach (var ip in ips) prefixes.Add($"http://{ip}:8080/");
+          foreach (var p in prefixes) listener.Prefixes.Add(p);
+          try
+          {
+            listener.Start();
+            Log($"Listening on: {string.Join(", ", prefixes)}");
+          }
+          catch (Exception exSpecific)
+          {
+            try { Log("Listener start failed for specific IPs, fallback to localhost: " + exSpecific.Message); } catch { }
+            try { listener.Close(); } catch { }
+            // Attempt 3: localhost only
+            try
+            {
+              listener = new HttpListener();
+              listener.Prefixes.Add("http://localhost:8080/");
+              listener.Start();
+              Log("Listening on: http://localhost:8080/ (fallback)");
+              _primaryUrl = "http://localhost:8080/";
+              _allUrls = new[] { "http://localhost:8080/" };
+            }
+            catch (Exception exLocal)
+            {
+              try { Log("Listener localhost fallback failed: " + exLocal.Message); } catch { }
+              return; // cannot start
+            }
+          }
+        }
+
+        while (!token.IsCancellationRequested)
+        {
+            HttpListenerContext ctx;
+            try { ctx = await listener.GetContextAsync(); }
+            catch (HttpListenerException) { break; }
+            catch (ObjectDisposedException) { break; }
+
+            _ = Task.Run(() => HandleRequestAsync(ctx));
+        }
+
+        try { listener.Stop(); } catch { }
+        try { listener.Close(); } catch { }
+    }
+
+    private static async Task HandleRequestAsync(HttpListenerContext ctx)
+    {
+        var req = ctx.Request;
+        var res = ctx.Response;
+        var path = req.Url?.AbsolutePath ?? "/";
+        Log($"Request: {req.HttpMethod} {path} from {req.RemoteEndPoint}");
+
+        try
+        {
+        if (req.HttpMethod == "GET" && path == "/manifest.webmanifest")
+        {
+          var manifest = "{\n  \"name\": \"Sofa Remote\",\n  \"short_name\": \"Sofa Remote\",\n  \"start_url\": \"/\",\n  \"scope\": \"/\",\n  \"display\": \"standalone\",\n  \"background_color\": \"#101822\",\n  \"theme_color\": \"#101822\",\n  \"icons\": [\n    { \"src\": \"/icon-192.png\", \"sizes\": \"192x192\", \"type\": \"image/png\" },\n    { \"src\": \"/icon-512.png\", \"sizes\": \"512x512\", \"type\": \"image/png\" }\n  ]\n}";
+          var bytesM = System.Text.Encoding.UTF8.GetBytes(manifest);
+          res.ContentType = "application/manifest+json";
+          res.StatusCode = 200;
+          res.ContentLength64 = bytesM.Length;
+          await res.OutputStream.WriteAsync(bytesM, 0, bytesM.Length);
+          return;
+        }
+        if (req.HttpMethod == "GET" && path == "/sw.js")
+        {
+          var js = "const CACHE_NAME='sofa-remote-" + AppVersion + "';\n" +
+                     "const ASSETS=['/','/manifest.webmanifest','/icon-192.png','/icon-512.png'];\n" +
+                     "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE_NAME).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting&&self.skipWaiting()));});\n" +
+                     "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)))).then(()=>self.clients&&self.clients.claim&&self.clients.claim()));});\n" +
+                     "self.addEventListener('fetch',e=>{const url=new URL(e.request.url); if(e.request.method!=='GET'){return;} if(url.pathname==='/'||ASSETS.includes(url.pathname)){e.respondWith(caches.match(e.request).then(hit=>hit||fetch(e.request).then(r=>{const copy=r.clone(); caches.open(CACHE_NAME).then(c=>c.put(e.request,copy)); return r;})).catch(()=>caches.match('/')));} });";
+          var bytesJs = System.Text.Encoding.UTF8.GetBytes(js);
+          res.ContentType = "application/javascript";
+          res.StatusCode = 200;
+          res.ContentLength64 = bytesJs.Length;
+          await res.OutputStream.WriteAsync(bytesJs, 0, bytesJs.Length);
+          return;
+        }
+        if (req.HttpMethod == "GET" && (path == "/icon-192.png" || path == "/icon-512.png"))
+        {
+          int size = path.Contains("192") ? 192 : 512;
+          var png = GenerateAppIconPng(size);
+          res.ContentType = "image/png";
+          res.StatusCode = 200;
+          res.ContentLength64 = png.Length;
+          await res.OutputStream.WriteAsync(png, 0, png.Length);
+          return;
+        }
+            if (req.HttpMethod == "GET" && path == "/")
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(IndexHtml);
+                res.ContentType = "text/html; charset=utf-8";
+                res.StatusCode = 200;
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                return;
+            }
+            if (req.HttpMethod == "GET" && path == "/qr.png")
+            {
+              var url = _primaryUrl ?? "http://localhost:8080/";
+              var png = GenerateQrPng(url);
+              res.ContentType = "image/png";
+              res.StatusCode = 200;
+              res.ContentLength64 = png.Length;
+              await res.OutputStream.WriteAsync(png, 0, png.Length);
+              return;
+            }
+            if (req.HttpMethod == "GET" && path == "/health")
+            {
+                res.StatusCode = 200; res.ContentType = "text/plain"; var b = System.Text.Encoding.UTF8.GetBytes("OK"); res.ContentLength64 = b.Length; await res.OutputStream.WriteAsync(b,0,b.Length); return;
+            }
+            if (req.HttpMethod == "POST")
+            {
+                switch (path)
+                {
+                    case "/playpause": SendPlayPause(); res.StatusCode = 200; break;
+                    case "/mute": SendMute(); res.StatusCode = 200; break;
+                    case "/volup": SendVolumeUp(); res.StatusCode = 200; break;
+                    case "/voldown": SendVolumeDown(); res.StatusCode = 200; break;
+                    case "/forward": SendSeekForward(); res.StatusCode = 200; break;
+                    case "/backward": SendSeekBackward(); res.StatusCode = 200; break;
+                    case "/fullscreen": SendFullscreen(); res.StatusCode = 200; break;
+                    case "/exitfullscreen": SendExitFullscreen(); res.StatusCode = 200; break;
+                    default: res.StatusCode = 404; break;
+                }
+                return;
+            }
+
+            res.StatusCode = 404;
+        }
+        catch (Exception ex)
+        {
+            try { Log("HandleRequest error: " + ex); } catch { }
+            res.StatusCode = 500;
+        }
+        finally
+        {
+            try { res.OutputStream.Close(); } catch { }
+        }
+    }
+
+    private static void SendPlayPause() => keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, UIntPtr.Zero);
+    private static void SendVolumeUp() => keybd_event(VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
+    private static void SendVolumeDown() => keybd_event(VK_VOLUME_DOWN, 0, 0, UIntPtr.Zero);
+    private static void SendMute() => keybd_event(VK_VOLUME_MUTE, 0, 0, UIntPtr.Zero);
+
+    private static void SendSeekForward()
+    {
+      TryFocusBrowserWindow();
+      Thread.Sleep(200);
+      keybd_event((byte)VK_RIGHT, 0, 0, UIntPtr.Zero);
+      Thread.Sleep(50);
+      keybd_event((byte)VK_RIGHT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+    
+    private static void SendSeekBackward()
+    {
+      TryFocusBrowserWindow();
+      Thread.Sleep(200);
+      keybd_event((byte)VK_LEFT, 0, 0, UIntPtr.Zero);
+      Thread.Sleep(50);
+      keybd_event((byte)VK_LEFT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+
+    private static void SendFullscreen()
+    {
+      TryFocusBrowserWindow();
+      Thread.Sleep(200);
+      keybd_event((byte)'F', 0, 0, UIntPtr.Zero); // F key down (enter fullscreen)
+      Thread.Sleep(50);
+      keybd_event((byte)'F', 0, KEYEVENTF_KEYUP, UIntPtr.Zero); // F key up
+    }
+
+    private static void SendExitFullscreen()
+    {
+      keybd_event(0x1B, 0, 0, UIntPtr.Zero); // ESC key down (exit fullscreen)
+      Thread.Sleep(50);
+      keybd_event(0x1B, 0, KEYEVENTF_KEYUP, UIntPtr.Zero); // ESC key up
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct INPUT { public uint type; public InputUnion U; }
+    [StructLayout(LayoutKind.Explicit)]
+    struct InputUnion { [FieldOffset(0)] public KEYBDINPUT ki; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    private static void SendKeyPressSendInput(ushort vk, int holdMs)
+    {
+        var inputsDown = new INPUT[] { new INPUT { type = 1, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, wScan = 0, dwFlags = 0, time = 0, dwExtraInfo = IntPtr.Zero } } } };
+        SendInput((uint)inputsDown.Length, inputsDown, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        Thread.Sleep(Math.Max(holdMs, 1));
+        var inputsUp = new INPUT[] { new INPUT { type = 1, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, wScan = 0, dwFlags = 2 /* KEYEVENTF_KEYUP */, time = 0, dwExtraInfo = IntPtr.Zero } } } };
+        SendInput((uint)inputsUp.Length, inputsUp, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    private static bool SendArrowScan(ushort scan)
+    {
+      try
+      {
+        var down = new INPUT[] { new INPUT { type = 1, U = new InputUnion { ki = new KEYBDINPUT { wVk = 0, wScan = scan, dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, time = 0, dwExtraInfo = IntPtr.Zero } } } };
+        var up = new INPUT[] { new INPUT { type = 1, U = new InputUnion { ki = new KEYBDINPUT { wVk = 0, wScan = scan, dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, time = 0, dwExtraInfo = IntPtr.Zero } } } };
+        SendInput((uint)down.Length, down, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        Thread.Sleep(60);
+        SendInput((uint)up.Length, up, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
+        return true;
+      }
+      catch
+      {
+        return false;
+      }
+    }
+
+    private static void Log(string message)
+    {
+        try { File.AppendAllText(_logFilePath!, $"{DateTime.UtcNow:O} {message}\n"); } catch { }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, UIntPtr dwExtraInfo);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWPLACEMENT { public uint length; public uint flags; public uint showCmd; public System.Drawing.Point ptMinPosition; public System.Drawing.Point ptMaxPosition; public System.Drawing.Rectangle rcNormalPosition; }
+
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
+    private static void ClickCenterOfActiveWindow()
+    {
+      try
+      {
+        IntPtr hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return;
+        if (GetWindowRect(hwnd, out RECT rect))
+        {
+          int centerX = (rect.Left + rect.Right) / 2;
+          int centerY = (rect.Top + rect.Bottom) / 2;
+          SetCursorPos(centerX, centerY);
+          mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+          Thread.Sleep(10);
+          mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        }
+      }
+      catch { }
+    }
+
+    private static void TryFocusBrowserWindow()
+    {
+      try
+      {
+        string[] candidates = new[] { "msedge", "chrome", "firefox", "brave", "opera" };
+        foreach (var name in candidates)
+        {
+          var procs = Process.GetProcessesByName(name);
+          foreach (var p in procs)
+          {
+            var h = p.MainWindowHandle;
+            if (h == IntPtr.Zero) continue;
+            SetForegroundWindow(h);
+            Thread.Sleep(80);
+            return;
+          }
+        }
+      }
+      catch { }
+    }
+
+    private static System.Collections.Generic.IEnumerable<string> GetLocalIPv4Addresses()
+    {
+        var host = Dns.GetHostEntry(Dns.GetHostName());
+        foreach (var ip in host.AddressList)
+        {
+            if (ip.AddressFamily == AddressFamily.InterNetwork)
+                yield return ip.ToString();
+        }
+    }
+
+    private static string? GetBestLocalAddress(System.Collections.Generic.IEnumerable<string> ips)
+    {
+      string? best = null;
+      foreach (var ip in ips)
+      {
+        if (IsPrivateIPv4(ip))
+        {
+          // Prefer non-VM common ranges over others
+          if (ip.StartsWith("192.168.")) return ip;
+          if (best == null) best = ip;
+        }
+      }
+      return best;
+    }
+
+    private static bool IsPrivateIPv4(string ip)
+    {
+      // Exclude localhost and APIPA
+      if (ip.StartsWith("127.")) return false;
+      if (ip.StartsWith("169.254.")) return false;
+      // Private ranges
+      if (ip.StartsWith("10.")) return true;
+      if (ip.StartsWith("192.168.")) return true;
+      var parts = ip.Split('.');
+      if (parts.Length == 4 && parts[0] == "172")
+      {
+        if (int.TryParse(parts[1], out var b) && b >= 16 && b <= 31) return true;
+      }
+      return false;
+    }
+
+    private static byte[] GenerateQrPng(string text)
+    {
+      using var generator = new QRCodeGenerator();
+      using var data = generator.CreateQrCode(text, QRCodeGenerator.ECCLevel.Q);
+      using var code = new QRCode(data);
+      using var bmp = code.GetGraphic(12);
+      using var ms = new MemoryStream();
+      bmp.Save(ms, ImageFormat.Png);
+      return ms.ToArray();
+    }
+
+    private static byte[] GenerateAppIconPng(int size)
+    {
+      // Try to load the actual icon file first
+      try
+      {
+        var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icons", $"icon-{size}.png");
+        if (File.Exists(iconPath))
+          return File.ReadAllBytes(iconPath);
+      }
+      catch { }
+
+      // Fallback: generate icon from scratch
+      using var bmp = new Bitmap(size, size);
+      using var g = Graphics.FromImage(bmp);
+      g.SmoothingMode = SmoothingMode.AntiAlias;
+      g.Clear(Color.Transparent);
+      
+      float scale = size / 256.0f;
+      
+      // Background circle (blue)
+      using (var bgBrush = new SolidBrush(Color.FromArgb(25, 118, 210)))
+      {
+        g.FillEllipse(bgBrush, 8*scale, 8*scale, 240*scale, 240*scale);
+      }
+      
+      // Sofa (red)
+      using (var sofaBrush = new SolidBrush(Color.FromArgb(255, 107, 107)))
+      {
+        g.FillRectangle(sofaBrush, 60*scale, 100*scale, 136*scale, 12*scale); // back
+        g.FillRectangle(sofaBrush, 65*scale, 112*scale, 126*scale, 40*scale); // seat
+        g.FillRectangle(sofaBrush, 55*scale, 100*scale, 15*scale, 60*scale); // left arm
+        g.FillRectangle(sofaBrush, 186*scale, 100*scale, 15*scale, 60*scale); // right arm
+      }
+      
+      // Remote (dark gray)
+      using (var remoteBrush = new SolidBrush(Color.FromArgb(52, 73, 94)))
+      {
+        g.FillRectangle(remoteBrush, 140*scale, 140*scale, 45*scale, 85*scale);
+      }
+      
+      // Remote buttons
+      using (var buttonBrush = new SolidBrush(Color.FromArgb(52, 152, 219)))
+      {
+        g.FillEllipse(buttonBrush, 154*scale, 152*scale, 16*scale, 16*scale);
+      }
+      
+      using (var whiteBrush = new SolidBrush(Color.FromArgb(224, 224, 224)))
+      {
+        g.FillEllipse(whiteBrush, 145*scale, 175*scale, 10*scale, 10*scale);
+        g.FillEllipse(whiteBrush, 157*scale, 175*scale, 10*scale, 10*scale);
+        g.FillEllipse(whiteBrush, 170*scale, 175*scale, 10*scale, 10*scale);
+      }
+      
+      using var ms2 = new MemoryStream();
+      bmp.Save(ms2, ImageFormat.Png);
+      return ms2.ToArray();
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle r, int radius)
+    {
+      int d = radius * 2;
+      var path = new GraphicsPath();
+      var arc = new Rectangle(r.Location, new Size(d, d));
+      path.AddArc(arc, 180, 90);
+      arc.X = r.Right - d;
+      path.AddArc(arc, 270, 90);
+      arc.Y = r.Bottom - d;
+      path.AddArc(arc, 0, 90);
+      arc.X = r.Left;
+      path.AddArc(arc, 90, 90);
+      path.CloseFigure();
+      return path;
+    }
+
+    private static bool TryEnsureNetworkPermissions()
+    {
+      try
+      {
+        var ps = new ProcessStartInfo
+        {
+          FileName = "powershell.exe",
+          Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"try { netsh http add urlacl url=http://+:8080/ user=$env:USERNAME | Out-Null; netsh advfirewall firewall add rule name='SofaRemote 8080 Private' dir=in action=allow protocol=TCP localport=8080 profile=private | Out-Null; netsh advfirewall firewall add rule name='SofaRemote 8080 Public' dir=in action=allow protocol=TCP localport=8080 profile=public | Out-Null; exit 0 } catch { exit 1 }\"",
+          Verb = "runas",
+          UseShellExecute = true,
+          WindowStyle = ProcessWindowStyle.Hidden
+        };
+        using var proc = Process.Start(ps);
+        if (proc == null) return false;
+        proc.WaitForExit(20000);
+        var ok = proc.ExitCode == 0;
+        try { Log("TryEnsureNetworkPermissions exit=" + proc.ExitCode); } catch { }
+        return ok;
+      }
+      catch (Exception ex)
+      {
+        try { Log("TryEnsureNetworkPermissions error: " + ex.Message); } catch { }
+        return false;
+      }
+    }
+
+    private static void ShowQrWindow()
+    {
+      var url = _primaryUrl ?? "http://localhost:8080/";
+      var png = GenerateQrPng(url);
+      using var ms = new MemoryStream(png);
+      using var img = Image.FromStream(ms);
+
+      var form = new Form
+      {
+        Text = "Sofa Remote",
+        FormBorderStyle = FormBorderStyle.FixedDialog,
+        MaximizeBox = false,
+        MinimizeBox = false,
+        StartPosition = FormStartPosition.CenterScreen,
+        TopMost = true,
+        BackColor = Color.FromArgb(15, 23, 42),
+        ForeColor = Color.FromArgb(241, 245, 249),
+        ClientSize = new Size(400, 560),
+        Padding = new Padding(20)
+      };
+
+      var titlePanel = new Panel
+      {
+        Dock = DockStyle.Top,
+        Height = 60,
+        BackColor = Color.FromArgb(15, 23, 42)
+      };
+      
+      var title = new Label
+      {
+        Text = "🛋️ Sofa Remote",
+        Font = new Font("Segoe UI", 16, FontStyle.Bold),
+        ForeColor = Color.FromArgb(241, 245, 249),
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleCenter
+      };
+      titlePanel.Controls.Add(title);
+      form.Controls.Add(titlePanel);
+
+      var qrPanel = new Panel
+      {
+        Dock = DockStyle.Top,
+        Height = 320,
+        BackColor = Color.White,
+        Padding = new Padding(10)
+      };
+      
+      var pb = new PictureBox
+      {
+        Image = (Image)img.Clone(),
+        SizeMode = PictureBoxSizeMode.Zoom,
+        Dock = DockStyle.Fill
+      };
+      qrPanel.Controls.Add(pb);
+      form.Controls.Add(qrPanel);
+
+      var urlLabel = new Label
+      {
+        Text = url,
+        Dock = DockStyle.Top,
+        Height = 40,
+        Font = new Font("Consolas", 11, FontStyle.Bold),
+        ForeColor = Color.FromArgb(59, 130, 246),
+        TextAlign = ContentAlignment.MiddleCenter,
+        Padding = new Padding(0, 10, 0, 0)
+      };
+      form.Controls.Add(urlLabel);
+
+      var instructionLabel = new Label
+      {
+        Text = "Scan QR code or enter URL on your phone\nPress ESC to close",
+        Dock = DockStyle.Top,
+        Height = 50,
+        Font = new Font("Segoe UI", 9),
+        ForeColor = Color.FromArgb(148, 163, 184),
+        TextAlign = ContentAlignment.TopCenter,
+        Padding = new Padding(0, 10, 0, 0)
+      };
+      form.Controls.Add(instructionLabel);
+
+      var allUrlsLabel = new Label
+      {
+        Text = _allUrls != null && _allUrls.Length > 1 ? "Available on:\n" + string.Join("\n", _allUrls) : "",
+        Dock = DockStyle.Fill,
+        Font = new Font("Consolas", 8),
+        ForeColor = Color.FromArgb(100, 116, 139),
+        TextAlign = ContentAlignment.TopCenter,
+        Padding = new Padding(0, 5, 0, 0)
+      };
+      form.Controls.Add(allUrlsLabel);
+
+      form.KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) form.Close(); };
+      form.Show();
+    }
+
+    private static void RestartElevated()
+    {
+      try
+      {
+        var exe = Application.ExecutablePath;
+        var psi = new ProcessStartInfo(exe)
+        {
+          UseShellExecute = true,
+          Verb = "runas"
+        };
+        Process.Start(psi);
+      }
+      catch (Exception ex)
+      {
+        try { Log("RestartElevated error: " + ex.Message); } catch { }
+      }
+      finally
+      {
+        try { _cts?.Cancel(); } catch { }
+        Application.Exit();
+      }
+    }
+}
