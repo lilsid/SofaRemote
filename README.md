@@ -43,7 +43,7 @@ A Windows system tray application that turns your phone into a wireless remote c
 ### Installation
 
 #### Option 1: Installer (Recommended)
-1. **Download** `SofaRemote-Setup-2025.12.24.1.exe` from the [Releases](../../releases) page
+1. **Download** `SofaRemote-Setup-2025.12.27.1.exe` from the [Releases](../../releases) page
 2. **Run** the installer
 3. **Choose** installation options:
    - Desktop shortcut (optional)
@@ -147,7 +147,7 @@ A Windows system tray application that turns your phone into a wireless remote c
 
 ```powershell
 # Clone the repository
-git clone https://github.com/yourusername/SofaRemote.git
+git clone https://github.com/lilsid/SofaRemote.git
 cd SofaRemote
 
 # Build and create installer (automated)
@@ -155,9 +155,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
 This creates:
-- **Regular build**: `publish\regular\` (0.15 MB exe + 241 DLLs)
 - **Single-file build**: `publish\single-file\` (170 MB all-in-one exe)
-- **Installer**: `publish\installers\SofaRemote-Setup-2025.12.24.1.exe`
+- **Installer**: `publish\installers\SofaRemote-Setup-2025.12.27.1.exe`
 
 ### Manual Build
 

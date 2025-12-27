@@ -1,5 +1,5 @@
 # Sofa Remote Build Script
-# Builds both regular and single-file executables
+# Builds single-file executable
 
 Write-Host "Building Sofa Remote..." -ForegroundColor Cyan
 Write-Host ""
@@ -9,18 +9,7 @@ Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
 Remove-Item -Recurse -Force .\bin\Release -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force .\publish -ErrorAction SilentlyContinue
 
-# Build 1: Regular build (non-bundled)
-Write-Host ""
-Write-Host "Building regular version (with DLLs)..." -ForegroundColor Green
-dotnet publish -c Release -r win-x64 --self-contained true -o .\publish\regular
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ Regular build completed: .\publish\regular\SofaRemote.exe" -ForegroundColor Green
-} else {
-    Write-Host "✗ Regular build failed" -ForegroundColor Red
-    exit 1
-}
-
-# Build 2: Single-file build (bundled)
+# Build single-file executable
 Write-Host ""
 Write-Host "Building single-file version..." -ForegroundColor Green
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\publish\single-file
@@ -31,24 +20,18 @@ if ($LASTEXITCODE -eq 0) {
     exit 1
 }
 
-# Copy icons to both output folders
+# Copy icons to output folder
 Write-Host ""
 Write-Host "Copying icons..." -ForegroundColor Yellow
-Copy-Item -Recurse -Force .\icons .\publish\regular\icons
 Copy-Item -Recurse -Force .\icons .\publish\single-file\icons
 
-# Show file sizes
+# Show file size
 Write-Host ""
 Write-Host "Build Summary:" -ForegroundColor Cyan
 Write-Host "─────────────────────────────────────────" -ForegroundColor DarkGray
 
-$regularSize = (Get-Item .\publish\regular\SofaRemote.exe).Length / 1MB
 $singleSize = (Get-Item .\publish\single-file\SofaRemote.exe).Length / 1MB
 
-Write-Host "Regular build:" -ForegroundColor White
-Write-Host "  Location: .\publish\regular\" -ForegroundColor Gray
-Write-Host "  Size: $($regularSize.ToString('0.00')) MB (with DLLs)" -ForegroundColor Gray
-Write-Host ""
 Write-Host "Single-file build:" -ForegroundColor White
 Write-Host "  Location: .\publish\single-file\" -ForegroundColor Gray
 Write-Host "  Size: $($singleSize.ToString('0.00')) MB (all-in-one)" -ForegroundColor Gray

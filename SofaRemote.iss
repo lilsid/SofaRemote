@@ -3,10 +3,11 @@
 ; Start Menu shortcuts, optional desktop shortcut, and auto-start capability
 
 #define MyAppName "Sofa Remote"
-#define MyAppVersion "2025.12.24.1"
+#define MyAppVersion "2025.12.27.1"
 #define MyAppPublisher "Sofa Remote"
-#define MyAppURL "https://github.com/yourusername/SofaRemote"
+#define MyAppURL "https://github.com/lilsid/SofaRemote"
 #define MyAppExeName "SofaRemote.exe"
+#define BonjourURL "https://download.info.apple.com/Mac_OS_X/061-8098.20100603.gthyu/BonjourPSSetup.exe"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application.
@@ -55,11 +56,75 @@ Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: st
 Filename: "{app}\{#MyAppExeName}"; Description: "Configure firewall and launch {#MyAppName}"; Flags: postinstall nowait skipifsilent
 
 [Code]
+var
+  DownloadPage: TDownloadWizardPage;
+
+function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  if Progress = ProgressMax then
+    Log(Format('Successfully downloaded %s', [FileName]));
+  Result := True;
+end;
+
+function IsBonjourInstalled: Boolean;
+var
+  UninstallKey: String;
+begin
+  UninstallKey := 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6E3610B2-430D-4EB0-81E3-2B57E8B9DE8D}';
+  Result := RegKeyExists(HKLM, UninstallKey) or RegKeyExists(HKLM64, UninstallKey);
+end;
+
+procedure InitializeWizard;
+begin
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), @OnDownloadProgress);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  if CurPageID = wpReady then begin
+    if not IsBonjourInstalled then begin
+      DownloadPage.Clear;
+      DownloadPage.Add('{#BonjourURL}', 'BonjourPSSetup.exe', '');
+      DownloadPage.Show;
+      try
+        try
+          DownloadPage.Download;
+          Result := True;
+        except
+          if DownloadPage.AbortedByUser then
+            Log('Bonjour download cancelled by user')
+          else
+            SuppressibleMsgBox(AddPeriod(GetExceptionMessage), mbCriticalError, MB_OK, IDOK);
+          Result := False;
+        end;
+      finally
+        DownloadPage.Hide;
+      end;
+    end else begin
+      Log('Bonjour already installed, skipping download');
+      Result := True;
+    end;
+  end else
+    Result := True;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  BonjourPath: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    // Optionally run the app with admin to configure firewall
-    // This is handled by the [Run] section
+    // Install Bonjour if it was downloaded
+    BonjourPath := ExpandConstant('{tmp}\BonjourPSSetup.exe');
+    if FileExists(BonjourPath) and not IsBonjourInstalled then
+    begin
+      Log('Installing Bonjour Print Services...');
+      // Run without /quiet so user can see it installing
+      if Exec(BonjourPath, '', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+        Log('Bonjour installation completed with code: ' + IntToStr(ResultCode))
+      else
+        Log('Failed to execute Bonjour installer');
+    end;
   end;
 end;

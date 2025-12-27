@@ -12,12 +12,13 @@ using System.Drawing.Drawing2D;
 using QRCoder;
 using System.Diagnostics;
 using System.Linq;
+using System.ServiceProcess;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
 
 static class Program
 {
-  private const string AppVersion = "2025.12.24.1";
+  private const string AppVersion = "2025.12.27.1";
     private const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
     private const byte VK_VOLUME_UP = 0xAF;
     private const byte VK_VOLUME_DOWN = 0xAE;
@@ -51,9 +52,9 @@ static class Program
   <link rel='apple-touch-icon' href='/icon-192.png?v=" + AppVersion + @"'>
   <style>
     :root{--primary:#1976d2;--surface:#1e293b;--on-surface:#f1f5f9;--muted:#94a3b8;--success:#10b981}
-    *{box-sizing:border-box;user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none}
+    *{box-sizing:border-box;user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;-webkit-tap-highlight-color:transparent}
     html,body{height:100%;margin:0;font-family:Roboto,Segoe UI,Arial,sans-serif;background:#0f172a;color:var(--on-surface);overflow:hidden;position:fixed;width:100%;touch-action:pan-y}
-    .wrap{max-width:500px;margin:0 auto;padding:20px;position:relative}
+    .wrap{max-width:500px;margin:0 auto;padding:20px;position:relative;isolation:isolate}
     .title{text-align:center;font-size:24px;margin-bottom:30px;font-weight:500;letter-spacing:0.5px;animation:fadeIn 0.4s ease-out}
     .app-icon{font-size:48px;margin-bottom:8px}
     .conn-status{text-align:center;margin-top:20px;padding:12px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:13px;color:var(--muted)}
@@ -82,7 +83,17 @@ static class Program
     .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,0.3);transform:scale(0);animation:ripple 0.6s ease-out;pointer-events:none}
     .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:20px}
     .grid .tile.full-width{grid-column:1 / -1}
-    .status{margin-top:16px;text-align:center;color:var(--muted);font-size:12px;transition:color 0.3s,transform 0.3s;min-height:18px}
+    .volume-control{grid-column:1 / -1;display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,rgba(25,118,210,0.1),rgba(66,165,245,0.05));border-radius:16px;padding:14px 18px;box-shadow:0 4px 12px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.1);isolation:isolate}
+    .volume-btn{width:48px;height:48px;border:none;background:linear-gradient(135deg,#1976d2,#1565c0);color:white;font-size:24px;font-weight:700;border-radius:12px;cursor:pointer;transition:transform 0.15s ease,box-shadow 0.15s ease;box-shadow:0 4px 12px rgba(25,118,210,0.4);display:flex;align-items:center;justify-content:center;flex-shrink:0;outline:none;-webkit-tap-highlight-color:transparent;user-select:none;position:relative;transform-origin:center center;will-change:transform;isolation:isolate;overflow:hidden}
+    .volume-btn:active{transform:scale(0.92) translateZ(0);box-shadow:0 2px 6px rgba(25,118,210,0.3)}
+    .volume-btn:hover{box-shadow:0 6px 16px rgba(25,118,210,0.5)}
+    .volume-btn:focus{outline:none}
+    .volume-btn::before,.volume-btn::after{content:none;display:none}
+    .volume-display-inline{flex:1;display:flex;align-items:center;gap:12px}
+    .volume-bar-container{flex-grow:1;height:8px;background:rgba(0,0,0,0.2);border-radius:4px;overflow:hidden;cursor:pointer;position:relative;box-shadow:inset 0 2px 4px rgba(0,0,0,0.2)}
+    .volume-bar{height:100%;background:linear-gradient(90deg,#1976d2,#42a5f5,#64b5f6);border-radius:4px;transition:width 0.15s ease;width:50%;pointer-events:none;box-shadow:0 0 8px rgba(66,165,245,0.6)}
+    .volume-text{font-size:16px;font-weight:700;min-width:42px;text-align:center;color:#42a5f5;text-shadow:0 2px 4px rgba(0,0,0,0.3);background:rgba(0,0,0,0.2);padding:4px 8px;border-radius:8px}
+    .status{margin-top:16px;text-align:center;color:var(--muted);font-size:12px;transition:color 0.3s,transform 0.3s;min-height:18px;display:none}
     .status.success{color:var(--success);transform:scale(1.05)}
     .install-btn{margin:20px auto;padding:14px 28px;background:linear-gradient(135deg,#1976d2,#1565c0);color:white;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(25,118,210,0.4);transition:all 0.3s;display:none}
     .install-btn:active{transform:scale(0.96);box-shadow:0 2px 8px rgba(25,118,210,0.3)}
@@ -124,8 +135,16 @@ static class Program
         <button id='fullscreen' class='tile' aria-label='Enter Fullscreen'><div class='icon'>⛶</div><div class='label'>Enter Full</div></button>
         <button id='exitfullscreen' class='tile' aria-label='Exit Fullscreen'><div class='icon'>⎋</div><div class='label'>Exit Full</div></button>
 
-        <button id='voldown' class='tile' aria-label='Volume Down'><div class='icon'>🔉</div><div class='label'>Volume -</div></button>
-        <button id='volup' class='tile' aria-label='Volume Up'><div class='icon'>🔊</div><div class='label'>Volume +</div></button>
+        <div class='volume-control full-width'>
+          <button id='voldown' class='volume-btn' aria-label='Volume Down'>−</button>
+          <div class='volume-display-inline'>
+            <div class='volume-bar-container' id='volume-container'>
+              <div class='volume-bar' id='volume-bar'></div>
+            </div>
+            <div class='volume-text' id='volume-text'>--</div>
+          </div>
+          <button id='volup' class='volume-btn' aria-label='Volume Up'>+</button>
+        </div>
 
         <button id='mute' class='tile full-width' aria-label='Mute'><div class='icon'>🔇</div><div class='label'>Mute</div></button>
 
@@ -135,7 +154,6 @@ static class Program
         <button id='forward' class='tile' aria-label='Forward'><div class='icon'>⏩</div><div class='label'>Forward</div></button>
       </div>
 
-      <div id='status' class='status'>Ready</div>
       <div class='conn-status'>
         <span id='conn-dot' class='conn-dot'></span>
         <span id='conn-text'>Connecting...</span>
@@ -158,6 +176,14 @@ static class Program
     </div>
   </div>
   <script>
+    // Service worker temporarily disabled for cache troubleshooting
+    if ('serviceWorker' in navigator) {
+      // Unregister all service workers
+      navigator.serviceWorker.getRegistrations().then(regs => {
+        regs.forEach(reg => reg.unregister());
+      });
+    }
+    /*
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js?v=" + AppVersion + @"').then(reg => {
         reg.update();
@@ -172,6 +198,7 @@ static class Program
         });
       });
     }
+    */
 
     const lastSent = {};
     let wakeLock = null;
@@ -217,7 +244,7 @@ static class Program
       setTimeout(()=>ripple.remove(),600);
     }
 
-    async function doPost(path){
+    async function doPost(path, silent = false){
       try{
         const now = Date.now();
         if(lastSent[path] && now - lastSent[path] < 400) return;
@@ -227,10 +254,10 @@ static class Program
           const t = await r.text().catch(()=>null);
           throw new Error(r.status + (t ? ' ' + t : ''));
         }
-        setStatus('✓ ' + path.replace('/',''), true);
+        if(!silent) setStatus('✓ ' + path.replace('/',''), true);
       }catch(e){
         const msg = (e && e.message) ? e.message : String(e);
-        setStatus('✗ ' + path.replace('/','') + ': ' + msg, false);
+        if(!silent) setStatus('✗ ' + path.replace('/','') + ': ' + msg, false);
         console.debug('doPost error', e);
       }
     }
@@ -247,12 +274,55 @@ static class Program
 
     document.getElementById('play').onclick=()=>doPost('/playpause');
     document.getElementById('mute').onclick=()=>doPost('/mute');
-    document.getElementById('volup').onclick=()=>doPost('/volup');
-    document.getElementById('voldown').onclick=()=>doPost('/voldown');
+    document.getElementById('volup').onclick=()=>{doPost('/volup', true);setTimeout(updateVolume,300);};
+    document.getElementById('voldown').onclick=()=>{doPost('/voldown', true);setTimeout(updateVolume,300);};
     document.getElementById('forward').onclick=()=>doPost('/forward');
     document.getElementById('back').onclick=()=>doPost('/backward');
     document.getElementById('fullscreen').onclick=()=>doPost('/fullscreen');
     document.getElementById('exitfullscreen').onclick=()=>doPost('/exitfullscreen');
+
+    let currentVolume = 50;
+    
+    // Interactive volume slider - decoupled from PC
+    const volumeContainer=document.getElementById('volume-container');
+    let isDragging=false;
+    
+    function setVolumeFromEvent(e){
+      const rect=volumeContainer.getBoundingClientRect();
+      const x=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+      const percent=Math.max(0,Math.min(100,Math.round((x/rect.width)*100)));
+      setVolume(percent);
+    }
+    
+    function setVolume(percent){
+      currentVolume = percent;
+      document.getElementById('volume-bar').style.width=percent+'%';
+      document.getElementById('volume-text').textContent=percent+'%';
+      fetch('/setvolume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({volume:percent})}).catch(()=>{});
+    }
+    
+    volumeContainer.addEventListener('mousedown',e=>{isDragging=true;setVolumeFromEvent(e);});
+    volumeContainer.addEventListener('touchstart',e=>{isDragging=true;setVolumeFromEvent(e);e.preventDefault();});
+    document.addEventListener('mousemove',e=>{if(isDragging)setVolumeFromEvent(e);});
+    document.addEventListener('touchmove',e=>{if(isDragging){setVolumeFromEvent(e);e.preventDefault();}});
+    document.addEventListener('mouseup',()=>isDragging=false);
+    document.addEventListener('touchend',()=>isDragging=false);
+
+    async function updateVolume(){
+      try{
+        const r = await fetch('/volume');
+        if(r.ok){
+          const vol = await r.json();
+          currentVolume = vol.volume;
+          const bar = document.getElementById('volume-bar');
+          const text = document.getElementById('volume-text');
+          bar.style.width = vol.volume + '%';
+          text.textContent = vol.volume + '%';
+        }
+      }catch(e){console.debug('Volume fetch error', e);}
+    }
+    
+    updateVolume(); // Initial update
 
     const connDot = document.getElementById('conn-dot');
     const connText = document.getElementById('conn-text');
@@ -386,9 +456,21 @@ static class Program
     {
         var ips = new System.Collections.Generic.List<string>(GetLocalIPv4Addresses());
         var best = GetBestLocalAddress(ips);
-        _primaryUrl = best != null ? $"http://{best}:8080/" : "http://localhost:8080/";
-        _allUrls = new System.Collections.Generic.List<string> { "http://localhost:8080/" }
-          .Concat(ips.ConvertAll(ip => $"http://{ip}:8080/")).ToArray();
+        
+        // Prefer hostname.local if Bonjour is available, fallback to IP
+        if (IsBonjourAvailable())
+        {
+          var hostname = GetLocalHostname();
+          _primaryUrl = $"http://{hostname}.local:8080/";
+          Log($"Using mDNS hostname: {_primaryUrl}");
+        }
+        else
+        {
+          _primaryUrl = best != null ? $"http://{best}:8080/" : "http://localhost:8080/";
+          Log($"Bonjour not available, using IP: {_primaryUrl}");
+        }
+        
+        _allUrls = new string[] { _primaryUrl }; // Only show primary URL
 
         HttpListener listener = new HttpListener();
         // Attempt 1: wildcard binding (restores prior behavior if URLACL exists)
@@ -487,11 +569,9 @@ static class Program
         }
         if (req.HttpMethod == "GET" && path == "/sw.js")
         {
-          var js = "const CACHE_NAME='sofa-remote-" + AppVersion + "';\n" +
-                     "const ASSETS=['/','/manifest.webmanifest','/icon-192.png','/icon-512.png'];\n" +
-                     "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE_NAME).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting&&self.skipWaiting()));});\n" +
-                     "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)))).then(()=>self.clients&&self.clients.claim&&self.clients.claim()));});\n" +
-                     "self.addEventListener('fetch',e=>{const url=new URL(e.request.url); if(e.request.method!=='GET'){return;} if(url.pathname==='/'||ASSETS.includes(url.pathname)){e.respondWith(caches.match(e.request).then(hit=>hit||fetch(e.request).then(r=>{const copy=r.clone(); caches.open(CACHE_NAME).then(c=>c.put(e.request,copy)); return r;})).catch(()=>caches.match('/')));} });";
+          // Force unregister - this service worker immediately unregisters itself
+          var js = "self.addEventListener('install', () => { self.skipWaiting(); });\n" +
+                   "self.addEventListener('activate', e => { e.waitUntil(self.registration.unregister().then(() => { return self.clients.matchAll(); }).then(clients => { clients.forEach(client => client.navigate(client.url)); })); });\n";
           var bytesJs = System.Text.Encoding.UTF8.GetBytes(js);
           res.ContentType = "application/javascript";
           res.StatusCode = 200;
@@ -532,6 +612,61 @@ static class Program
             {
                 res.StatusCode = 200; res.ContentType = "text/plain"; var b = System.Text.Encoding.UTF8.GetBytes("OK"); res.ContentLength64 = b.Length; await res.OutputStream.WriteAsync(b,0,b.Length); return;
             }
+            if (req.HttpMethod == "GET" && path == "/reset")
+            {
+                // Special page to unregister service worker
+                var resetHtml = @"<!DOCTYPE html><html><head><title>Reset Cache</title><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font-family:system-ui;padding:40px;text-align:center;background:#0f172a;color:#f1f5f9'><h1>🔄 Clearing Cache...</h1><p id='status'>Unregistering service workers...</p><script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.getRegistrations().then(regs=>{
+    Promise.all(regs.map(reg=>reg.unregister())).then(()=>{
+      document.getElementById('status').innerHTML='✓ Cache cleared!<br><br><a href=\'/\' style=\'color:#1976d2;font-size:18px\'>Click here to open app</a>';
+    });
+  });
+}else{
+  document.getElementById('status').innerHTML='✓ No service worker found<br><br><a href=\'/\' style=\'color:#1976d2;font-size:18px\'>Click here to open app</a>';
+}
+</script></body></html>";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(resetHtml);
+                res.StatusCode = 200;
+                res.ContentType = "text/html";
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                return;
+            }
+            if (req.HttpMethod == "GET" && path == "/volume")
+            {
+                var volume = GetSystemVolume();
+                var json = "{\"volume\":" + volume + "}";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                res.StatusCode = 200;
+                res.ContentType = "application/json";
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                return;
+            }
+            if (req.HttpMethod == "POST" && path == "/setvolume")
+            {
+                using (var reader = new StreamReader(req.InputStream))
+                {
+                    var body = await reader.ReadToEndAsync();
+                    var match = System.Text.RegularExpressions.Regex.Match(body, @"""?volume""?\s*:\s*(\d+)");
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out int targetVolume))
+                    {
+                        SetSystemVolume(targetVolume);
+                        var json = "{\"success\":true}";
+                        var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                        res.StatusCode = 200;
+                        res.ContentType = "application/json";
+                        res.ContentLength64 = bytes.Length;
+                        await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                    }
+                    else
+                    {
+                        res.StatusCode = 400;
+                    }
+                }
+                return;
+            }
             if (req.HttpMethod == "POST")
             {
                 switch (path)
@@ -566,6 +701,145 @@ static class Program
     private static void SendVolumeUp() => keybd_event(VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
     private static void SendVolumeDown() => keybd_event(VK_VOLUME_DOWN, 0, 0, UIntPtr.Zero);
     private static void SendMute() => keybd_event(VK_VOLUME_MUTE, 0, 0, UIntPtr.Zero);
+
+    private static int GetSystemVolume()
+    {
+      try
+      {
+        var scriptPath = Path.Combine(Path.GetTempPath(), "getvol.ps1");
+        File.WriteAllText(scriptPath, @"
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+[Guid(""5CDF2C82-841E-4546-9722-0CF74078229A""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int NotImpl1(); int NotImpl2(); int GetChannelCount(out int pnChannelCount);
+  int SetMasterVolumeLevel(float fLevelDB, System.Guid pguidEventContext);
+  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);
+  int GetMasterVolumeLevel(out float pfLevelDB);
+  int GetMasterVolumeLevelScalar(out float pfLevel);
+}
+[Guid(""D666063F-1587-4E43-81F1-B948E807363F""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+  int Activate(ref System.Guid iid, int dwClsCtx, System.IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+}
+[Guid(""A95664D2-9614-4F35-A746-DE8DB63617E6""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+  int NotImpl1(); int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice);
+}
+[ComImport, Guid(""BCDE0395-E52F-467C-8E3D-C4579291692E"")]
+class MMDeviceEnumeratorComObject { }
+public class AudioHelper {
+  public static float GetVolume() {
+    var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 0, out dev);
+    var iid = typeof(IAudioEndpointVolume).GUID; object obj;
+    dev.Activate(ref iid, 0, System.IntPtr.Zero, out obj);
+    var vol = (IAudioEndpointVolume)obj; float level;
+    vol.GetMasterVolumeLevelScalar(out level); return level;
+  }
+}
+'@
+[Math]::Round([AudioHelper]::GetVolume() * 100)
+");
+        
+        var process = new Process
+        {
+          StartInfo = new ProcessStartInfo
+          {
+            FileName = "powershell",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+          }
+        };
+        process.Start();
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        
+        try { File.Delete(scriptPath); } catch { }
+        
+        if (!string.IsNullOrEmpty(error))
+        {
+          Log($"GetSystemVolume error: {error}");
+        }
+        
+        if (int.TryParse(output.Trim(), out var volume))
+        {
+          return Math.Clamp(volume, 0, 100);
+        }
+      }
+      catch (Exception ex)
+      {
+        Log($"GetSystemVolume exception: {ex.Message}");
+      }
+      return 50; // Default fallback
+    }
+
+    private static void SetSystemVolume(int volume)
+    {
+      try
+      {
+        volume = Math.Clamp(volume, 0, 100);
+        
+        var scriptPath = Path.Combine(Path.GetTempPath(), "setvol.ps1");
+        File.WriteAllText(scriptPath, $@"
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+[Guid(""5CDF2C82-841E-4546-9722-0CF74078229A""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {{
+  int NotImpl1(); int NotImpl2(); int GetChannelCount(out int pnChannelCount);
+  int SetMasterVolumeLevel(float fLevelDB, System.Guid pguidEventContext);
+  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);
+  int GetMasterVolumeLevel(out float pfLevelDB);
+  int GetMasterVolumeLevelScalar(out float pfLevel);
+}}
+[Guid(""D666063F-1587-4E43-81F1-B948E807363F""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {{
+  int Activate(ref System.Guid iid, int dwClsCtx, System.IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+}}
+[Guid(""A95664D2-9614-4F35-A746-DE8DB63617E6""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {{
+  int NotImpl1(); int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice);
+}}
+[ComImport, Guid(""BCDE0395-E52F-467C-8E3D-C4579291692E"")]
+class MMDeviceEnumeratorComObject {{ }}
+public class AudioHelper {{
+  public static void SetVolume(float level) {{
+    var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 0, out dev);
+    var iid = typeof(IAudioEndpointVolume).GUID; object obj;
+    dev.Activate(ref iid, 0, System.IntPtr.Zero, out obj);
+    var vol = (IAudioEndpointVolume)obj;
+    vol.SetMasterVolumeLevelScalar(level, System.Guid.Empty);
+  }}
+}}
+'@
+[AudioHelper]::SetVolume({volume / 100.0})
+");
+        
+        var process = new Process
+        {
+          StartInfo = new ProcessStartInfo
+          {
+            FileName = "powershell",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+          }
+        };
+        process.Start();
+        process.WaitForExit(1000);
+        
+        try { File.Delete(scriptPath); } catch { }
+      }
+      catch (Exception ex)
+      {
+        Log($"SetSystemVolume error: {ex.Message}");
+      }
+    }
 
     private static void SendSeekForward()
     {
@@ -718,6 +992,44 @@ static class Program
         }
     }
 
+    private static string GetLocalHostname()
+    {
+      try
+      {
+        return Dns.GetHostName().ToLower();
+      }
+      catch
+      {
+        return Environment.MachineName.ToLower();
+      }
+    }
+
+    private static bool IsBonjourAvailable()
+    {
+      try
+      {
+        // Check if mDNSResponder service is running (Bonjour)
+        var services = System.ServiceProcess.ServiceController.GetServices();
+        foreach (var service in services)
+        {
+          if (service.ServiceName.Equals("Bonjour Service", StringComparison.OrdinalIgnoreCase) ||
+              service.ServiceName.Equals("mDNSResponder", StringComparison.OrdinalIgnoreCase))
+          {
+            return service.Status == System.ServiceProcess.ServiceControllerStatus.Running;
+          }
+        }
+        
+        // Also check if Bonjour executable exists (even if service isn't running)
+        if (File.Exists(@"C:\Program Files\Bonjour\mDNSResponder.exe") ||
+            File.Exists(@"C:\Program Files (x86)\Bonjour\mDNSResponder.exe"))
+        {
+          Log("Bonjour installed but service not running, using IP fallback");
+        }
+      }
+      catch { }
+      return false;
+    }
+
     private static string? GetBestLocalAddress(System.Collections.Generic.IEnumerable<string> ips)
     {
       string? best = null;
@@ -860,12 +1172,97 @@ static class Program
       }
     }
 
+    private static string? GetCurrentWiFiSSID()
+    {
+      try
+      {
+        var process = new Process
+        {
+          StartInfo = new ProcessStartInfo
+          {
+            FileName = "netsh",
+            Arguments = "wlan show interfaces",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+          }
+        };
+        process.Start();
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        
+        foreach (var line in output.Split('\n'))
+        {
+          var trimmed = line.Trim();
+          if (trimmed.StartsWith("SSID", StringComparison.OrdinalIgnoreCase) && trimmed.Contains(":"))
+          {
+            var parts = trimmed.Split(new[] { ':' }, 2);
+            if (parts.Length == 2 && !parts[0].Contains("BSSID"))
+            {
+              return parts[1].Trim();
+            }
+          }
+        }
+      }
+      catch { }
+      return null;
+    }
+
+    private static string? GetCurrentWiFiPassword(string ssid)
+    {
+      try
+      {
+        var process = new Process
+        {
+          StartInfo = new ProcessStartInfo
+          {
+            FileName = "netsh",
+            Arguments = $"wlan show profile name=\"{ssid}\" key=clear",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+          }
+        };
+        process.Start();
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        
+        foreach (var line in output.Split('\n'))
+        {
+          var trimmed = line.Trim();
+          if (trimmed.StartsWith("Key Content", StringComparison.OrdinalIgnoreCase) && trimmed.Contains(":"))
+          {
+            var parts = trimmed.Split(new[] { ':' }, 2);
+            if (parts.Length == 2)
+            {
+              return parts[1].Trim();
+            }
+          }
+        }
+      }
+      catch { }
+      return null;
+    }
+
     private static void ShowQrWindow()
     {
       var url = _primaryUrl ?? "http://localhost:8080/";
-      var png = GenerateQrPng(url);
-      using var ms = new MemoryStream(png);
-      using var img = Image.FromStream(ms);
+      var ssid = GetCurrentWiFiSSID();
+      var password = ssid != null ? GetCurrentWiFiPassword(ssid) : null;
+      
+      var urlPng = GenerateQrPng(url);
+      using var urlMs = new MemoryStream(urlPng);
+      using var urlImg = Image.FromStream(urlMs);
+
+      byte[]? wifiPng = null;
+      Image? wifiImg = null;
+      if (password != null)
+      {
+        var wifiQrData = $"WIFI:T:WPA;S:{ssid};P:{password};;";
+        wifiPng = GenerateQrPng(wifiQrData);
+        using var wifiMs = new MemoryStream(wifiPng);
+        wifiImg = Image.FromStream(wifiMs);
+      }
 
       var form = new Form
       {
@@ -877,7 +1274,7 @@ static class Program
         TopMost = true,
         BackColor = Color.FromArgb(15, 23, 42),
         ForeColor = Color.FromArgb(241, 245, 249),
-        ClientSize = new Size(400, 560),
+        ClientSize = new Size(400, 650),
         Padding = new Padding(20)
       };
 
@@ -899,57 +1296,226 @@ static class Program
       titlePanel.Controls.Add(title);
       form.Controls.Add(titlePanel);
 
+      // WiFi network info
+      var wifiLabel = new Label
+      {
+        Text = ssid != null ? $"📶 Network: {ssid}" : "📶 Connect to same WiFi network",
+        Dock = DockStyle.Top,
+        Height = 40,
+        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+        ForeColor = Color.FromArgb(34, 197, 94),
+        BackColor = Color.FromArgb(20, 30, 48),
+        TextAlign = ContentAlignment.MiddleCenter,
+        Padding = new Padding(10)
+      };
+      form.Controls.Add(wifiLabel);
+
+      // QR Code panel
       var qrPanel = new Panel
       {
         Dock = DockStyle.Top,
-        Height = 320,
+        Height = 360,
         BackColor = Color.White,
         Padding = new Padding(10)
       };
       
-      var pb = new PictureBox
+      var qrPb = new PictureBox
       {
-        Image = (Image)img.Clone(),
+        Image = (Image)urlImg.Clone(),
         SizeMode = PictureBoxSizeMode.Zoom,
-        Dock = DockStyle.Fill
+        Dock = DockStyle.Fill,
+        Tag = "app" // Track which QR is showing
       };
-      qrPanel.Controls.Add(pb);
+      qrPanel.Controls.Add(qrPb);
       form.Controls.Add(qrPanel);
+
+      var qrLabel = new Label
+      {
+        Text = "📱 App Remote",
+        Dock = DockStyle.Top,
+        Height = 25,
+        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+        ForeColor = Color.FromArgb(59, 130, 246),
+        TextAlign = ContentAlignment.MiddleCenter
+      };
+      form.Controls.Add(qrLabel);
 
       var urlLabel = new Label
       {
         Text = url,
         Dock = DockStyle.Top,
-        Height = 40,
-        Font = new Font("Consolas", 11, FontStyle.Bold),
-        ForeColor = Color.FromArgb(59, 130, 246),
-        TextAlign = ContentAlignment.MiddleCenter,
-        Padding = new Padding(0, 10, 0, 0)
+        Height = 30,
+        Font = new Font("Consolas", 9),
+        ForeColor = Color.FromArgb(148, 163, 184),
+        TextAlign = ContentAlignment.MiddleCenter
       };
       form.Controls.Add(urlLabel);
 
+      // WiFi QR slide-down panel (only if password available)
+      if (password != null && wifiImg != null)
+      {
+        var wifiSlidePanel = new Panel
+        {
+          Dock = DockStyle.Top,
+          Height = 0, // Start collapsed
+          BackColor = Color.FromArgb(15, 23, 42),
+          Padding = new Padding(0)
+        };
+
+        var wifiQrContainer = new Panel
+        {
+          Location = new Point(20, 10),
+          Size = new Size(360, 290),
+          BackColor = Color.FromArgb(20, 30, 48),
+          Padding = new Padding(10)
+        };
+
+        var wifiQrWhitePanel = new Panel
+        {
+          Location = new Point(30, 35),
+          Size = new Size(240, 240),
+          BackColor = Color.White,
+          Padding = new Padding(10)
+        };
+
+        var wifiQrPb = new PictureBox
+        {
+          Image = (Image)wifiImg.Clone(),
+          SizeMode = PictureBoxSizeMode.Zoom,
+          Dock = DockStyle.Fill
+        };
+        wifiQrWhitePanel.Controls.Add(wifiQrPb);
+
+        var wifiQrTitle = new Label
+        {
+          Text = "📶 WiFi Connection",
+          Location = new Point(10, 10),
+          Size = new Size(280, 25),
+          Font = new Font("Segoe UI", 10, FontStyle.Bold),
+          ForeColor = Color.FromArgb(34, 197, 94),
+          TextAlign = ContentAlignment.MiddleCenter
+        };
+        wifiQrContainer.Controls.Add(wifiQrTitle);
+        wifiQrContainer.Controls.Add(wifiQrWhitePanel);
+
+        wifiSlidePanel.Controls.Add(wifiQrContainer);
+        form.Controls.Add(wifiSlidePanel);
+
+        var toggleBtn = new Button
+        {
+          Text = "▼ Show WiFi QR",
+          Dock = DockStyle.Top,
+          Height = 40,
+          Font = new Font("Segoe UI", 10, FontStyle.Bold),
+          BackColor = Color.FromArgb(34, 197, 94),
+          ForeColor = Color.White,
+          FlatStyle = FlatStyle.Flat,
+          Cursor = Cursors.Hand,
+          Margin = new Padding(0, 5, 0, 5)
+        };
+        toggleBtn.FlatAppearance.BorderSize = 0;
+
+        var slideTimer = new System.Windows.Forms.Timer();
+        slideTimer.Interval = 10; // 100 FPS for ultra-smooth animation
+        var isExpanded = false;
+        var targetHeight = 310;
+        var animationProgress = 0.0;
+        var animationSpeed = 0.15; // Higher = faster (0.15 = ~400ms total)
+        
+        slideTimer.Tick += (_, __) =>
+        {
+          if (isExpanded)
+          {
+            // Animate towards 1.0
+            animationProgress += animationSpeed;
+            if (animationProgress >= 1.0)
+            {
+              animationProgress = 1.0;
+              slideTimer.Stop();
+            }
+            // Bounce easing: overshoots then settles
+            var eased = animationProgress < 0.5 
+              ? 2 * animationProgress * animationProgress 
+              : 1 - Math.Pow(-2 * animationProgress + 2, 2) / 2;
+            // Add subtle bounce at the end
+            if (animationProgress > 0.8)
+            {
+              var bounce = Math.Sin((animationProgress - 0.8) * Math.PI * 5) * 0.05;
+              eased += bounce;
+            }
+            wifiSlidePanel.Height = (int)(targetHeight * Math.Min(eased, 1.0));
+          }
+          else
+          {
+            // Animate towards 0.0
+            animationProgress -= animationSpeed;
+            if (animationProgress <= 0.0)
+            {
+              animationProgress = 0.0;
+              wifiSlidePanel.Height = 0;
+              slideTimer.Stop();
+            }
+            else
+            {
+              var eased = 1 - Math.Pow(1 - animationProgress, 3); // Ease out cubic
+              wifiSlidePanel.Height = (int)(targetHeight * eased);
+            }
+          }
+        };
+        
+        toggleBtn.Click += (_, __) =>
+        {
+          isExpanded = !isExpanded;
+          if (isExpanded)
+          {
+            animationProgress = 0.0;
+            toggleBtn.Text = "▲ Hide WiFi QR";
+            toggleBtn.BackColor = Color.FromArgb(239, 68, 68);
+          }
+          else
+          {
+            animationProgress = 1.0;
+            toggleBtn.Text = "▼ Show WiFi QR";
+            toggleBtn.BackColor = Color.FromArgb(34, 197, 94);
+          }
+          slideTimer.Start();
+        };
+        form.Controls.Add(toggleBtn);
+      }
+
+      var refreshBtn = new Button
+      {
+        Text = "🔄 Refresh IP",
+        Dock = DockStyle.Top,
+        Height = 40,
+        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+        BackColor = Color.FromArgb(25, 118, 210),
+        ForeColor = Color.White,
+        FlatStyle = FlatStyle.Flat,
+        Cursor = Cursors.Hand,
+        Margin = new Padding(0, 5, 0, 10)
+      };
+      refreshBtn.FlatAppearance.BorderSize = 0;
+      refreshBtn.Click += (_, __) =>
+      {
+        form.Controls.Clear();
+        form.Dispose();
+        ShowQrWindow();
+      };
+      form.Controls.Add(refreshBtn);
+
       var instructionLabel = new Label
       {
-        Text = "Scan QR code or enter URL on your phone\nPress ESC to close",
-        Dock = DockStyle.Top,
-        Height = 50,
+        Text = password != null 
+          ? "Scan WiFi QR → Connect → Scan App QR\nPress ESC to close" 
+          : "Scan QR code or enter URL on your phone\nPress ESC to close",
+        Dock = DockStyle.Fill,
         Font = new Font("Segoe UI", 9),
         ForeColor = Color.FromArgb(148, 163, 184),
         TextAlign = ContentAlignment.TopCenter,
         Padding = new Padding(0, 10, 0, 0)
       };
       form.Controls.Add(instructionLabel);
-
-      var allUrlsLabel = new Label
-      {
-        Text = _allUrls != null && _allUrls.Length > 1 ? "Available on:\n" + string.Join("\n", _allUrls) : "",
-        Dock = DockStyle.Fill,
-        Font = new Font("Consolas", 8),
-        ForeColor = Color.FromArgb(100, 116, 139),
-        TextAlign = ContentAlignment.TopCenter,
-        Padding = new Padding(0, 5, 0, 0)
-      };
-      form.Controls.Add(allUrlsLabel);
 
       form.KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) form.Close(); };
       form.Show();

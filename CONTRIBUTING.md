@@ -21,7 +21,7 @@ Thank you for your interest in contributing to Sofa Remote! 🎉
 ### Build & Run
 ```powershell
 # Clone the repo
-git clone https://github.com/yourusername/SofaRemote.git
+git clone https://github.com/lilsid/SofaRemote.git
 cd SofaRemote
 
 # Build
