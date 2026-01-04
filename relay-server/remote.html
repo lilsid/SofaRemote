@@ -1,0 +1,358 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width,initial-scale=1'>
+  <title>Sofa Remote</title>
+  <meta name='theme-color' content='#101822'>
+  <meta name='apple-mobile-web-app-capable' content='yes'>
+  <meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>
+  <style>
+    :root{--primary:#1976d2;--surface:#1e293b;--on-surface:#f1f5f9;--muted:#94a3b8;--success:#10b981}
+    *{box-sizing:border-box;user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;-webkit-tap-highlight-color:transparent}
+    html,body{height:100%;margin:0;font-family:Roboto,Segoe UI,Arial,sans-serif;background:#0f172a;color:var(--on-surface);overflow:hidden;position:fixed;width:100%;touch-action:pan-y}
+    .wrap{max-width:500px;margin:0 auto;padding:20px;position:relative;isolation:isolate}
+    .title{text-align:center;font-size:24px;margin-bottom:30px;font-weight:500;letter-spacing:0.5px;animation:fadeIn 0.4s ease-out}
+    .app-icon{font-size:48px;margin-bottom:8px}
+    .conn-status{text-align:center;margin-top:20px;padding:12px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:13px;color:var(--muted)}
+    .conn-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#ef4444;transition:all 0.3s;box-shadow:0 0 8px rgba(239,68,68,0.6)}
+    .conn-dot.connected{background:#10b981;box-shadow:0 0 12px rgba(16,185,129,0.8),0 0 20px rgba(16,185,129,0.4)}
+    .disconnected-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(8px)}
+    .disconnected-overlay.show{display:flex}
+    .disconnected-card{background:linear-gradient(135deg, #1e293b 0%, #334155 100%);padding:40px 32px;border-radius:20px;text-align:center;max-width:320px;box-shadow:0 20px 60px rgba(0,0,0,0.6),0 0 1px rgba(255,255,255,0.1) inset;animation:slideUp 0.4s ease-out;border:1px solid rgba(255,255,255,0.05)}
+    .disconnected-icon{font-size:64px;margin-bottom:20px;animation:pulse 2s ease-in-out infinite;filter:drop-shadow(0 4px 12px rgba(239,68,68,0.4))}
+    .disconnected-title{font-size:22px;font-weight:600;margin-bottom:12px;color:#f1f5f9;letter-spacing:0.3px}
+    .disconnected-msg{font-size:14px;color:#94a3b8;line-height:1.6;font-weight:400}
+    @keyframes slideUp{from{opacity:0;transform:translateY(20px) scale(0.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+    .install-popup{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:1001;backdrop-filter:blur(8px)}
+    .install-popup.show{display:flex}
+    .install-card{background:linear-gradient(135deg,#1e293b 0%,#334155 100%);padding:32px 24px;border-radius:20px;text-align:center;max-width:320px;box-shadow:0 20px 60px rgba(0,0,0,0.6);animation:slideUp 0.4s ease-out;border:1px solid rgba(255,255,255,0.05)}
+    .install-title{font-size:20px;font-weight:600;margin-bottom:16px;color:#f1f5f9;letter-spacing:0.3px}
+    .install-msg{font-size:14px;color:#cbd5e1;line-height:1.7;margin-bottom:24px}
+    .install-close-btn{width:100%;padding:12px;background:linear-gradient(135deg,#1976d2,#1565c0);color:white;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(25,118,210,0.4);transition:all 0.2s}
+    .install-close-btn:active{transform:scale(0.96);box-shadow:0 2px 8px rgba(25,118,210,0.3)}
+    .tile{background:var(--surface);color:var(--on-surface);border:0;border-radius:12px;height:110px;display:flex;align-items:center;justify-content:center;flex-direction:column;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:all 0.2s cubic-bezier(0.4,0,0.2,1);cursor:pointer;position:relative;overflow:hidden}
+    .tile .icon{font-size:36px;margin-bottom:4px;transition:transform 0.2s}
+    .tile .label{font-size:13px;opacity:.9;font-weight:500;letter-spacing:0.3px}
+    .tile:active{transform:scale(0.96);box-shadow:0 1px 4px rgba(0,0,0,0.4)}
+    .tile:active .icon{transform:scale(1.1)}
+    .tile.pulse{animation:pulse 0.3s ease-out}
+    .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,0.3);transform:scale(0);animation:ripple 0.6s ease-out;pointer-events:none}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:20px}
+    .grid .tile.full-width{grid-column:1 / -1}
+    .volume-control{grid-column:1 / -1;display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,rgba(25,118,210,0.1),rgba(66,165,245,0.05));border-radius:16px;padding:14px 18px;box-shadow:0 4px 12px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.1);isolation:isolate}
+    .volume-btn{width:48px;height:48px;border:none;background:linear-gradient(135deg,#1976d2,#1565c0);color:white;font-size:24px;font-weight:700;border-radius:12px;cursor:pointer;transition:transform 0.15s ease,box-shadow 0.15s ease;box-shadow:0 4px 12px rgba(25,118,210,0.4);display:flex;align-items:center;justify-content:center;flex-shrink:0;outline:none;-webkit-tap-highlight-color:transparent;user-select:none;position:relative;transform-origin:center center;will-change:transform;isolation:isolate;overflow:hidden}
+    .volume-btn:active{transform:scale(0.92) translateZ(0);box-shadow:0 2px 6px rgba(25,118,210,0.3)}
+    .volume-btn:hover{box-shadow:0 6px 16px rgba(25,118,210,0.5)}
+    .volume-btn:focus{outline:none}
+    .volume-btn::before,.volume-btn::after{content:none;display:none}
+    .volume-display-inline{flex:1;display:flex;align-items:center;gap:12px}
+    .volume-bar-container{flex-grow:1;height:8px;background:rgba(0,0,0,0.2);border-radius:4px;overflow:hidden;cursor:pointer;position:relative;box-shadow:inset 0 2px 4px rgba(0,0,0,0.2)}
+    .volume-bar{height:100%;background:linear-gradient(90deg,#1976d2,#42a5f5,#64b5f6);border-radius:4px;transition:width 0.15s ease;width:50%;pointer-events:none;box-shadow:0 0 8px rgba(66,165,245,0.6)}
+    .volume-text{font-size:16px;font-weight:700;min-width:42px;text-align:center;color:#42a5f5;text-shadow:0 2px 4px rgba(0,0,0,0.3);background:rgba(0,0,0,0.2);padding:4px 8px;border-radius:8px}
+    .status{margin-top:16px;text-align:center;color:var(--muted);font-size:12px;transition:color 0.3s,transform 0.3s;min-height:18px;display:none}
+    .status.success{color:var(--success);transform:scale(1.05)}
+    .page{animation:fadeIn 0.4s ease-out}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(0.95)}}
+    @keyframes ripple{to{transform:scale(4);opacity:0}}
+    @media (max-width:420px){.tile{height:100px}}
+  </style>
+</head>
+<body>
+  <div class='wrap'>
+    <div class='page'>
+      <div class='title'>
+        <div class='app-icon'>
+          <svg width='48' height='48' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'>
+            <circle cx='32' cy='32' r='30' fill='#1976d2'/>
+            <g fill='#ff6b6b'>
+              <rect x='15' y='25' width='34' height='3' rx='1.5'/>
+              <rect x='16' y='28' width='32' height='10' rx='2'/>
+              <rect x='14' y='25' width='4' height='15' rx='2'/>
+              <rect x='46' y='25' width='4' height='15' rx='2'/>
+            </g>
+            <g fill='#34495e'>
+              <rect x='35' y='35' width='11' height='21' rx='2'/>
+              <circle cx='40.5' cy='42' r='2' fill='#3498db'/>
+              <circle cx='37' cy='48' r='1.2' fill='#e0e0e0'/>
+              <circle cx='40.5' cy='48' r='1.2' fill='#e0e0e0'/>
+              <circle cx='44' cy='48' r='1.2' fill='#e0e0e0'/>
+            </g>
+          </svg>
+        </div>
+        <div>Sofa Remote</div>
+      </div>
+      
+      <div class='grid'>
+        <button id='fullscreen' class='tile' aria-label='Enter Fullscreen'><div class='icon'>⛶</div><div class='label'>Enter Full</div></button>
+        <button id='exitfullscreen' class='tile' aria-label='Exit Fullscreen'><div class='icon'>⎋</div><div class='label'>Exit Full</div></button>
+
+        <div class='volume-control full-width'>
+          <button id='voldown' class='volume-btn' aria-label='Volume Down'>−</button>
+          <div class='volume-display-inline'>
+            <div class='volume-bar-container' id='volume-container'>
+              <div class='volume-bar' id='volume-bar'></div>
+            </div>
+            <div class='volume-text' id='volume-text'>50%</div>
+          </div>
+          <button id='volup' class='volume-btn' aria-label='Volume Up'>+</button>
+        </div>
+
+        <button id='mute' class='tile full-width' aria-label='Mute'><div class='icon'>🔇</div><div class='label'>Mute</div></button>
+
+        <button id='play' class='tile full-width' aria-label='Play/Pause'><div class='icon'>⏯</div><div class='label'>Play / Pause</div></button>
+
+        <button id='back' class='tile' aria-label='Rewind'><div class='icon'>⏪</div><div class='label'>Backward</div></button>
+        <button id='forward' class='tile' aria-label='Forward'><div class='icon'>⏩</div><div class='label'>Forward</div></button>
+      </div>
+
+      <div class='conn-status'>
+        <span id='conn-dot' class='conn-dot'></span>
+        <span id='conn-text'>Connecting...</span>
+      </div>
+    </div>
+  </div>
+
+  <div id='disconnected-overlay' class='disconnected-overlay'>
+    <div class='disconnected-card'>
+      <div class='disconnected-icon'>⚠</div>
+      <div class='disconnected-title'>PC Disconnected</div>
+      <div class='disconnected-msg'>Please check if SofaRemote is running on your PC</div>
+    </div>
+  </div>
+  <div id='install-popup' class='install-popup'>
+    <div class='install-card'>
+      <div class='install-title'>Install Sofa Remote</div>
+      <div class='install-msg' id='install-msg'></div>
+      <button id='install-close' class='install-close-btn'>Got it!</button>
+    </div>
+  </div>
+  <script>
+    const lastSent = {};
+    let wakeLock = null;
+    let noSleepEnabled = false;
+    
+    // Relay server support
+    let relayWs = null;
+    let sessionCode = null;
+    let useRelay = false;
+    const RELAY_URL = 'wss://sofaremote-production.up.railway.app';
+    
+    // Extract session code from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    sessionCode = urlParams.get('session');
+    
+    function connectRelay(){
+      if(relayWs) return;
+      if(!sessionCode){
+        console.log('No session code, relay disabled');
+        return;
+      }
+      
+      try{
+        relayWs = new WebSocket(RELAY_URL);
+        
+        relayWs.onopen = () => {
+          console.log('Relay connected');
+          relayWs.send(JSON.stringify({
+            type: 'register',
+            clientType: 'phone',
+            sessionCode: sessionCode
+          }));
+        };
+        
+        relayWs.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if(msg.type === 'registered'){
+            useRelay = msg.pcOnline;
+            updateConnStatus();
+            console.log('Registered with relay, PC online:', msg.pcOnline);
+          } else if(msg.type === 'pc_status'){
+            useRelay = msg.online;
+            updateConnStatus();
+          }
+        };
+        
+        relayWs.onerror = (e) => {
+          console.log('Relay error:', e);
+          useRelay = false;
+        };
+        
+        relayWs.onclose = () => {
+          console.log('Relay disconnected');
+          relayWs = null;
+          useRelay = false;
+          updateConnStatus();
+          setTimeout(connectRelay, 3000);
+        };
+      }catch(e){
+        console.log('Relay connection failed:', e);
+      }
+    }
+    
+    function sendRelay(action){
+      if(!relayWs || relayWs.readyState !== WebSocket.OPEN) return false;
+      try{
+        relayWs.send(JSON.stringify({
+          type: 'relay',
+          data: { action }
+        }));
+        return true;
+      }catch(e){
+        console.log('Relay send error:', e);
+        return false;
+      }
+    }
+    
+    function updateConnStatus(){
+      const dot = document.querySelector('.conn-dot');
+      const status = document.querySelector('#conn-text');
+      const overlay = document.getElementById('disconnected-overlay');
+      if(useRelay){
+        dot.classList.add('connected');
+        if(status) status.textContent = 'Connected via Relay';
+        overlay.classList.remove('show');
+      }else{
+        dot.classList.remove('connected');
+        if(status) status.textContent = 'Connecting...';
+        overlay.classList.add('show');
+      }
+    }
+
+    function keepScreenOn(){
+      if(noSleepEnabled) return;
+      
+      if('wakeLock' in navigator && !wakeLock){
+        navigator.wakeLock.request('screen')
+          .then(lock => {
+            wakeLock = lock;
+            noSleepEnabled = true;
+            console.log('Wake lock active');
+          })
+          .catch(err => console.log('Wake lock error:', err));
+      }
+      
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if(isIOS && !noSleepEnabled){
+        const audio = document.createElement('audio');
+        audio.loop = true;
+        audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+        audio.play().then(() => {
+          noSleepEnabled = true;
+          console.log('iOS NoSleep active');
+        }).catch(e => console.log('Audio error:', e));
+      }
+    }
+
+    function createRipple(e){
+      const btn = e.currentTarget;
+      const ripple = document.createElement('span');
+      ripple.classList.add('ripple');
+      const rect = btn.getBoundingClientRect();
+      const size = Math.max(rect.width,rect.height);
+      ripple.style.width = ripple.style.height = size + 'px';
+      ripple.style.left = (e.clientX - rect.left - size/2) + 'px';
+      ripple.style.top = (e.clientY - rect.top - size/2) + 'px';
+      btn.appendChild(ripple);
+      setTimeout(()=>ripple.remove(),600);
+    }
+
+    async function doPost(path){
+      const action = path.replace('/','');
+      if(useRelay && sendRelay(action)){
+        return;
+      }
+    }
+
+    document.getElementById('play').onclick=()=>doPost('/playpause');
+    document.getElementById('mute').onclick=()=>doPost('/mute');
+    document.getElementById('volup').onclick=()=>doPost('/volup');
+    document.getElementById('voldown').onclick=()=>doPost('/voldown');
+    document.getElementById('forward').onclick=()=>doPost('/forward');
+    document.getElementById('back').onclick=()=>doPost('/backward');
+    document.getElementById('fullscreen').onclick=()=>doPost('/fullscreen');
+    document.getElementById('exitfullscreen').onclick=()=>doPost('/exitfullscreen');
+
+    let currentVolume = 50;
+    
+    const volumeContainer=document.getElementById('volume-container');
+    let isDragging=false;
+    
+    function setVolumeFromEvent(e){
+      const rect=volumeContainer.getBoundingClientRect();
+      const x=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+      const percent=Math.max(0,Math.min(100,Math.round((x/rect.width)*100)));
+      setVolume(percent);
+    }
+    
+    function setVolume(percent){
+      currentVolume = percent;
+      document.getElementById('volume-bar').style.width=percent+'%';
+      document.getElementById('volume-text').textContent=percent+'%';
+      if(useRelay) sendRelay('setvolume_' + percent);
+    }
+    
+    volumeContainer.addEventListener('mousedown',e=>{isDragging=true;setVolumeFromEvent(e);});
+    volumeContainer.addEventListener('touchstart',e=>{isDragging=true;setVolumeFromEvent(e);e.preventDefault();});
+    document.addEventListener('mousemove',e=>{if(isDragging)setVolumeFromEvent(e);});
+    document.addEventListener('touchmove',e=>{if(isDragging){setVolumeFromEvent(e);e.preventDefault();}});
+    document.addEventListener('mouseup',()=>isDragging=false);
+    document.addEventListener('touchend',()=>isDragging=false);
+    
+    connectRelay();
+    console.log('Relay mode enabled with session:', sessionCode);
+
+    const installPopup = document.getElementById('install-popup');
+    const installMsg = document.getElementById('install-msg');
+    const installClose = document.getElementById('install-close');
+    
+    installClose.addEventListener('click', () => installPopup.classList.remove('show'));
+    
+    const isInstalled = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    if (!isInstalled) {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      
+      if (isIOS) {
+        installMsg.innerHTML = '<strong>1.</strong> Tap <strong>Share &#8593;</strong><br><strong>2.</strong> Select <strong>Add to Home Screen</strong><br><strong>3.</strong> Tap <strong>Add</strong>';
+        setTimeout(() => installPopup.classList.add('show'), 1000);
+      } else {
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+          e.preventDefault();
+          deferredPrompt = e;
+          installMsg.innerHTML = 'Tap below to install Sofa Remote';
+          installClose.textContent = 'Install Now';
+          installClose.addEventListener('click', async () => {
+            if (deferredPrompt) {
+              deferredPrompt.prompt();
+              deferredPrompt = null;
+            }
+          }, { once: true });
+          setTimeout(() => installPopup.classList.add('show'), 1000);
+        });
+      }
+    }
+
+    Array.from(document.querySelectorAll('button')).forEach(b=>{
+      b.addEventListener('click', createRipple);
+      b.addEventListener('touchstart', e=>{
+        if(b.disabled) return;
+        keepScreenOn();
+        const touch = e.touches[0];
+        const fakeEvent = {currentTarget:b, clientX:touch.clientX, clientY:touch.clientY};
+        createRipple(fakeEvent);
+        b.classList.add('pulse');
+        setTimeout(()=>b.classList.remove('pulse'),300);
+      });
+      b.addEventListener('touchend', e=>{
+        e.preventDefault();
+        if(b.disabled) return;
+        b.click();
+        b.disabled = true;
+        setTimeout(()=>{ try{ b.disabled = false }catch{} }, 500);
+      });
+    });
+  </script>
+</body>
+</html>
