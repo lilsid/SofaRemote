@@ -9,11 +9,114 @@ const sessions = new Map();
 // Store session metadata: { sessionCode: { pcName: string, connectedAt: Date } }
 const sessionMeta = new Map();
 
+function getRemoteHTML(session) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sofa Remote</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-tap-highlight-color:transparent}
+    body{font-family:system-ui,sans-serif;background:#0f172a;color:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+    .container{max-width:400px;width:100%}
+    h1{text-align:center;margin-bottom:30px;font-size:24px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .btn{background:#1e293b;border:none;border-radius:12px;padding:20px;font-size:18px;color:#f1f5f9;cursor:pointer;transition:all 0.2s;box-shadow:0 2px 8px rgba(0,0,0,0.3)}
+    .btn:active{transform:scale(0.95);background:#334155}
+    .full{grid-column:1/-1}
+    .status{text-align:center;margin-top:20px;padding:10px;border-radius:8px;font-size:14px;background:#1e293b}
+    .connected{color:#10b981}
+    .disconnected{color:#ef4444}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🛋️ Sofa Remote</h1>
+    <div class="grid">
+      <button class="btn" onclick="send('fullscreen')">⛶ Enter Full</button>
+      <button class="btn" onclick="send('exitfullscreen')">⎋ Exit Full</button>
+      <button class="btn" onclick="send('voldown')">− Volume</button>
+      <button class="btn" onclick="send('volup')">+ Volume</button>
+      <button class="btn full" onclick="send('mute')">🔇 Mute</button>
+      <button class="btn full" onclick="send('playpause')">⏯ Play/Pause</button>
+      <button class="btn" onclick="send('backward')">⏪ Back</button>
+      <button class="btn" onclick="send('forward')">⏩ Forward</button>
+    </div>
+    <div class="status" id="status">
+      <span class="disconnected">● Connecting...</span>
+    </div>
+  </div>
+  <script>
+    const SESSION = '${session}';
+    const RELAY_URL = 'wss://' + window.location.host;
+    let ws = null;
+    let connected = false;
+    
+    function connect(){
+      ws = new WebSocket(RELAY_URL);
+      
+      ws.onopen = () => {
+        ws.send(JSON.stringify({type:'register',clientType:'phone',sessionCode:SESSION}));
+      };
+      
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if(msg.type === 'registered'){
+          connected = msg.pcOnline;
+          updateStatus();
+        }else if(msg.type === 'pc_status'){
+          connected = msg.online;
+          updateStatus();
+        }
+      };
+      
+      ws.onclose = () => {
+        connected = false;
+        updateStatus();
+        setTimeout(connect, 2000);
+      };
+      
+      ws.onerror = () => {
+        connected = false;
+        updateStatus();
+      };
+    }
+    
+    function send(action){
+      if(!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({type:'relay',data:{action}}));
+      document.getElementById('status').innerHTML = '<span class="connected">● ' + action + '</span>';
+      setTimeout(updateStatus, 1000);
+    }
+    
+    function updateStatus(){
+      const el = document.getElementById('status');
+      if(connected){
+        el.innerHTML = '<span class="connected">● Connected</span>';
+      }else{
+        el.innerHTML = '<span class="disconnected">● Disconnected</span>';
+      }
+    }
+    
+    connect();
+  </script>
+</body>
+</html>`;
+}
+
 const server = http.createServer((req, res) => {
-  if (req.url === '/health') {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  
+  if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
-  } else if (req.url === '/stats') {
+  } else if (url.pathname === '/remote') {
+    // Serve the remote control interface
+    const session = url.searchParams.get('session');
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(getRemoteHTML(session || ''));
+  } else if (url.pathname === '/stats') {
     const stats = {
       activeSessions: sessions.size,
       totalConnections: Array.from(sessions.values()).reduce((sum, s) => 

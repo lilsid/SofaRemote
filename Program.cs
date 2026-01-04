@@ -15,11 +15,18 @@ using System.Linq;
 using System.ServiceProcess;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
+using System.Net.Http;
+using System.Text.Json;
+using System.Net.WebSockets;
+using System.Text;
 
 static class Program
 {
   private const string AppVersion = "2025.12.27.1";
+  private const string RelayServerUrl = "wss://sofaremote-production.up.railway.app";
     private const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
+    private const byte VK_MEDIA_NEXT_TRACK = 0xB0;
+    private const byte VK_MEDIA_PREV_TRACK = 0xB1;
     private const byte VK_VOLUME_UP = 0xAF;
     private const byte VK_VOLUME_DOWN = 0xAE;
     private const byte VK_VOLUME_MUTE = 0xAD;
@@ -38,6 +45,12 @@ static class Program
     private static string? _logFilePath;
     private static string? _primaryUrl;
     private static string[]? _allUrls;
+    
+    // Relay server fields
+    private static ClientWebSocket? _relayClient;
+    private static string? _sessionCode;
+    private static bool _relayConnected = false;
+    private static bool _localServerRunning = false;
 
     private static readonly string IndexHtml = @"<!doctype html>
 <html>
@@ -203,6 +216,92 @@ static class Program
     const lastSent = {};
     let wakeLock = null;
     let noSleepEnabled = false;
+    
+    // Relay server support
+    let relayWs = null;
+    let sessionCode = null;
+    let useRelay = false;
+    const RELAY_URL = 'wss://sofaremote-production.up.railway.app';
+    
+    // Extract session code from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    sessionCode = urlParams.get('session');
+    
+    function connectRelay(){
+      if(relayWs) return;
+      if(!sessionCode){
+        console.log('No session code, relay disabled');
+        return;
+      }
+      
+      try{
+        relayWs = new WebSocket(RELAY_URL);
+        
+        relayWs.onopen = () => {
+          console.log('Relay connected');
+          // Register as phone
+          relayWs.send(JSON.stringify({
+            type: 'register',
+            clientType: 'phone',
+            sessionCode: sessionCode
+          }));
+        };
+        
+        relayWs.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if(msg.type === 'registered'){
+            useRelay = msg.pcOnline;
+            updateConnStatus();
+            console.log('Registered with relay, PC online:', msg.pcOnline);
+          } else if(msg.type === 'pc_status'){
+            useRelay = msg.online;
+            updateConnStatus();
+          }
+        };
+        
+        relayWs.onerror = (e) => {
+          console.log('Relay error:', e);
+          useRelay = false;
+        };
+        
+        relayWs.onclose = () => {
+          console.log('Relay disconnected');
+          relayWs = null;
+          useRelay = false;
+          updateConnStatus();
+          // Reconnect after 3 seconds
+          setTimeout(connectRelay, 3000);
+        };
+      }catch(e){
+        console.log('Relay connection failed:', e);
+      }
+    }
+    
+    function sendRelay(action){
+      if(!relayWs || relayWs.readyState !== WebSocket.OPEN) return false;
+      try{
+        relayWs.send(JSON.stringify({
+          type: 'relay',
+          data: { action }
+        }));
+        return true;
+      }catch(e){
+        console.log('Relay send error:', e);
+        return false;
+      }
+    }
+    
+    function updateConnStatus(){
+      const dot = document.querySelector('.conn-dot');
+      const status = document.querySelector('.conn-status span:last-child');
+      if(useRelay){
+        dot.classList.add('connected');
+        if(status) status.textContent = 'Connected via Relay';
+      }else{
+        dot.classList.remove('connected');
+        if(status) status.textContent = 'Connecting...';
+      }
+    }
 
     function keepScreenOn(){
       if(noSleepEnabled) return;
@@ -245,6 +344,16 @@ static class Program
     }
 
     async function doPost(path, silent = false){
+      // Try relay first if enabled
+      if(useRelay){
+        const action = path.replace('/','');
+        if(sendRelay(action)){
+          if(!silent) setStatus('✓ ' + action + ' (relay)', true);
+          return;
+        }
+      }
+      
+      // Fallback to local HTTP
       try{
         const now = Date.now();
         if(lastSent[path] && now - lastSent[path] < 400) return;
@@ -323,6 +432,12 @@ static class Program
     }
     
     updateVolume(); // Initial update
+    
+    // Connect to relay if session code present
+    if(sessionCode){
+      connectRelay();
+      console.log('Relay mode enabled with session:', sessionCode);
+    }
 
     const connDot = document.getElementById('conn-dot');
     const connText = document.getElementById('conn-text');
@@ -431,9 +546,11 @@ static class Program
         };
         var menu = new ContextMenuStrip();
         var showQrItem = new ToolStripMenuItem("Show QR", null, (_, __) => { try { ShowQrWindow(); } catch { } });
+        var checkUpdateItem = new ToolStripMenuItem("Check for Updates", null, (_, __) => { Task.Run(() => CheckForUpdates(true)); });
         var restartAdminItem = new ToolStripMenuItem("Restart as Admin (Fix LAN)", null, (_, __) => { try { RestartElevated(); } catch { } });
         var exitItem = new ToolStripMenuItem("Exit", null, (_, __) => { try { _cts!.Cancel(); } catch { } Application.Exit(); });
         menu.Items.Add(showQrItem);
+        menu.Items.Add(checkUpdateItem);
         menu.Items.Add(restartAdminItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
@@ -447,6 +564,8 @@ static class Program
         };
 
         Task.Run(() => RunServerAsync(_cts.Token));
+        Task.Run(() => ConnectToRelay()); // Connect to relay server
+        Task.Run(() => CheckForUpdates(false)); // Check for updates on startup
         Application.Run();
 
         try { _tray.Visible = false; _tray.Dispose(); } catch { }
@@ -478,6 +597,7 @@ static class Program
         {
           listener.Prefixes.Add("http://+:8080/");
           listener.Start();
+          _localServerRunning = true;
           Log("Listening on: http://+:8080/ (wildcard)");
         }
         catch (Exception exWildcard)
@@ -1247,12 +1367,24 @@ public class AudioHelper {{
     private static void ShowQrWindow()
     {
       var url = _primaryUrl ?? "http://localhost:8080/";
+      
+      // Create relay URL for remote access
+      var relayUrl = $"https://sofaremote-production.up.railway.app/remote?session={_sessionCode}";
+      
+      // Create URL with session code for local network with relay fallback
+      var urlWithSession = url;
+      if (_sessionCode != null)
+      {
+        urlWithSession += $"?session={_sessionCode}";
+      }
+      
       var ssid = GetCurrentWiFiSSID();
       var password = ssid != null ? GetCurrentWiFiPassword(ssid) : null;
       
-      var urlPng = GenerateQrPng(url);
-      using var urlMs = new MemoryStream(urlPng);
-      using var urlImg = Image.FromStream(urlMs);
+      // Generate QR for relay URL (works from anywhere)
+      var relayPng = GenerateQrPng(relayUrl);
+      using var relayMs = new MemoryStream(relayPng);
+      using var relayImg = Image.FromStream(relayMs);
 
       byte[]? wifiPng = null;
       Image? wifiImg = null;
@@ -1321,31 +1453,31 @@ public class AudioHelper {{
       
       var qrPb = new PictureBox
       {
-        Image = (Image)urlImg.Clone(),
+        Image = (Image)relayImg.Clone(),
         SizeMode = PictureBoxSizeMode.Zoom,
         Dock = DockStyle.Fill,
-        Tag = "app" // Track which QR is showing
+        Tag = "relay" // Show relay QR by default
       };
       qrPanel.Controls.Add(qrPb);
       form.Controls.Add(qrPanel);
 
       var qrLabel = new Label
       {
-        Text = "📱 App Remote",
+        Text = "📱 Remote Access (Any Network)",
         Dock = DockStyle.Top,
         Height = 25,
         Font = new Font("Segoe UI", 10, FontStyle.Bold),
-        ForeColor = Color.FromArgb(59, 130, 246),
+        ForeColor = Color.FromArgb(76, 175, 80),
         TextAlign = ContentAlignment.MiddleCenter
       };
       form.Controls.Add(qrLabel);
 
       var urlLabel = new Label
       {
-        Text = url,
+        Text = relayUrl,
         Dock = DockStyle.Top,
-        Height = 30,
-        Font = new Font("Consolas", 9),
+        Height = 45,
+        Font = new Font("Consolas", 8),
         ForeColor = Color.FromArgb(148, 163, 184),
         TextAlign = ContentAlignment.MiddleCenter
       };
@@ -1542,5 +1674,508 @@ public class AudioHelper {{
         try { _cts?.Cancel(); } catch { }
         Application.Exit();
       }
+    }
+
+    // Update Feature
+    private static async Task CheckForUpdates(bool manual)
+    {
+        try
+        {
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Add("User-Agent", "SofaRemote");
+            client.Timeout = TimeSpan.FromSeconds(10);
+            
+            var response = await client.GetStringAsync("https://api.github.com/repos/lilsid/SofaRemote/releases/latest");
+            var json = JsonDocument.Parse(response);
+            var root = json.RootElement;
+            
+            var latestVersion = root.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
+            if (string.IsNullOrEmpty(latestVersion)) return;
+            
+            var currentVersion = AppVersion;
+            if (latestVersion == currentVersion)
+            {
+                if (manual)
+                {
+                    _tray?.ShowBalloonTip(3000, "No Updates", "You're running the latest version!", ToolTipIcon.Info);
+                }
+                return;
+            }
+            
+            var releaseNotes = root.GetProperty("body").GetString() ?? "";
+            var downloadUrl = "";
+            long fileSize = 0;
+            
+            if (root.TryGetProperty("assets", out var assets))
+            {
+                foreach (var asset in assets.EnumerateArray())
+                {
+                    var name = asset.GetProperty("name").GetString() ?? "";
+                    if (name.StartsWith("SofaRemote-Setup-") && name.EndsWith(".exe"))
+                    {
+                        downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                        fileSize = asset.GetProperty("size").GetInt64();
+                        break;
+                    }
+                }
+            }
+            
+            if (string.IsNullOrEmpty(downloadUrl)) return;
+            
+            // Show update dialog on UI thread
+            var context = SynchronizationContext.Current;
+            if (context != null)
+            {
+                context.Post(_ => ShowUpdateDialog(latestVersion, releaseNotes, downloadUrl, fileSize), null);
+            }
+            else
+            {
+                ShowUpdateDialog(latestVersion, releaseNotes, downloadUrl, fileSize);
+            }
+        }
+        catch
+        {
+            if (manual)
+            {
+                _tray?.ShowBalloonTip(3000, "Update Check Failed", "Could not connect to update server", ToolTipIcon.Warning);
+            }
+        }
+    }
+    
+    private static void ShowUpdateDialog(string newVersion, string notes, string downloadUrl, long fileSize)
+    {
+        var dialog = new Form
+        {
+            Text = "Update Available",
+            Size = new Size(380, 280),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterScreen,
+            BackColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        
+        var titleLabel = new Label
+        {
+            Text = "New version available",
+            Font = new Font("Segoe UI", 12, FontStyle.Bold),
+            Location = new Point(20, 20),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(60, 60, 60)
+        };
+        
+        var versionLabel = new Label
+        {
+            Text = $"v{AppVersion}  →  v{newVersion}",
+            Font = new Font("Segoe UI", 10),
+            Location = new Point(20, 50),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(25, 118, 210)
+        };
+        
+        var sizeLabel = new Label
+        {
+            Text = $"Size: {fileSize / 1024.0 / 1024.0:F1} MB",
+            Font = new Font("Segoe UI", 8),
+            Location = new Point(20, 75),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        
+        var notesBox = new TextBox
+        {
+            Text = notes.Length > 200 ? notes.Substring(0, 200) + "..." : notes,
+            Font = new Font("Segoe UI", 9),
+            Location = new Point(20, 105),
+            Size = new Size(320, 80),
+            Multiline = true,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = Color.FromArgb(248, 248, 248)
+        };
+        
+        var downloadBtn = new Button
+        {
+            Text = "Download & Install",
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(20, 200),
+            Size = new Size(150, 35),
+            BackColor = Color.FromArgb(25, 118, 210),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        downloadBtn.FlatAppearance.BorderSize = 0;
+        downloadBtn.Click += (s, e) => { dialog.Hide(); Task.Run(() => DownloadUpdate(downloadUrl, newVersion)); };
+        
+        var laterBtn = new Button
+        {
+            Text = "Later",
+            Font = new Font("Segoe UI", 9),
+            Location = new Point(185, 200),
+            Size = new Size(75, 35),
+            BackColor = Color.FromArgb(240, 240, 240),
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        laterBtn.FlatAppearance.BorderSize = 0;
+        laterBtn.Click += (s, e) => dialog.Close();
+        
+        dialog.Controls.AddRange(new Control[] { titleLabel, versionLabel, sizeLabel, notesBox, downloadBtn, laterBtn });
+        dialog.ShowDialog();
+    }
+    
+    private static async Task DownloadUpdate(string url, string version)
+    {
+        Form? progressDialog = null;
+        ProgressBar? progressBar = null;
+        Label? progressLabel = null;
+        
+        try
+        {
+            var tempPath = Path.Combine(Path.GetTempPath(), $"SofaRemote-Setup-v{version}.exe");
+            
+            // Show progress dialog
+            Application.OpenForms[0]?.Invoke(() =>
+            {
+                progressDialog = new Form
+                {
+                    Text = "Downloading...",
+                    Size = new Size(380, 180),
+                    FormBorderStyle = FormBorderStyle.FixedDialog,
+                    MaximizeBox = false,
+                    MinimizeBox = false,
+                    StartPosition = FormStartPosition.CenterScreen,
+                    BackColor = Color.White,
+                    Font = new Font("Segoe UI", 9)
+                };
+                
+                var titleLabel = new Label
+                {
+                    Text = "Downloading update",
+                    Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                    Location = new Point(20, 20),
+                    AutoSize = true
+                };
+                
+                var fileLabel = new Label
+                {
+                    Text = $"SofaRemote-Setup-v{version}.exe",
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(20, 50),
+                    AutoSize = true,
+                    ForeColor = Color.Gray
+                };
+                
+                progressBar = new ProgressBar
+                {
+                    Location = new Point(20, 75),
+                    Size = new Size(320, 20),
+                    Style = ProgressBarStyle.Continuous
+                };
+                
+                progressLabel = new Label
+                {
+                    Text = "0%",
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(20, 100),
+                    AutoSize = true,
+                    ForeColor = Color.FromArgb(100, 100, 100)
+                };
+                
+                var cancelBtn = new Button
+                {
+                    Text = "Cancel",
+                    Font = new Font("Segoe UI", 9),
+                    Location = new Point(140, 125),
+                    Size = new Size(80, 30),
+                    BackColor = Color.FromArgb(240, 240, 240),
+                    FlatStyle = FlatStyle.Flat,
+                    Cursor = Cursors.Hand,
+                    Tag = false
+                };
+                cancelBtn.FlatAppearance.BorderSize = 0;
+                cancelBtn.Click += (s, e) => { cancelBtn.Tag = true; progressDialog.Close(); };
+                
+                progressDialog.Controls.AddRange(new Control[] { titleLabel, fileLabel, progressBar, progressLabel, cancelBtn });
+                progressDialog.Show();
+            });
+            
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromMinutes(10);
+            
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+            
+            var totalBytes = response.Content.Headers.ContentLength ?? 0;
+            using var contentStream = await response.Content.ReadAsStreamAsync();
+            using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
+            
+            var buffer = new byte[8192];
+            long totalRead = 0;
+            int bytesRead;
+            
+            while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+            {
+                await fileStream.WriteAsync(buffer, 0, bytesRead);
+                totalRead += bytesRead;
+                
+                if (totalBytes > 0 && progressBar != null && progressLabel != null)
+                {
+                    var progress = (int)((totalRead * 100) / totalBytes);
+                    progressBar.Invoke(() => progressBar.Value = progress);
+                    progressLabel.Invoke(() => progressLabel.Text = $"{progress}%  •  {totalRead / 1024.0 / 1024.0:F1} / {totalBytes / 1024.0 / 1024.0:F1} MB");
+                }
+            }
+            
+            progressDialog?.Invoke(() => progressDialog.Close());
+            
+            // Show completion dialog
+            Application.OpenForms[0]?.Invoke(() => ShowInstallDialog(tempPath, version));
+        }
+        catch
+        {
+            progressDialog?.Invoke(() => progressDialog.Close());
+            _tray?.ShowBalloonTip(3000, "Download Failed", "Could not download update", ToolTipIcon.Error);
+        }
+    }
+    
+    private static void ShowInstallDialog(string installerPath, string version)
+    {
+        var dialog = new Form
+        {
+            Text = "Ready to Install",
+            Size = new Size(380, 200),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            StartPosition = FormStartPosition.CenterScreen,
+            BackColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        
+        var titleLabel = new Label
+        {
+            Text = "✓  Download complete",
+            Font = new Font("Segoe UI", 12, FontStyle.Bold),
+            Location = new Point(20, 20),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(76, 175, 80)
+        };
+        
+        var infoLabel = new Label
+        {
+            Text = $"v{version} is ready to install",
+            Font = new Font("Segoe UI", 9),
+            Location = new Point(20, 55),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 100, 100)
+        };
+        
+        var noteLabel = new Label
+        {
+            Text = "App will close after clicking Install",
+            Font = new Font("Segoe UI", 8),
+            Location = new Point(20, 80),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        
+        var installBtn = new Button
+        {
+            Text = "Install Now",
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(20, 120),
+            Size = new Size(110, 35),
+            BackColor = Color.FromArgb(76, 175, 80),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        installBtn.FlatAppearance.BorderSize = 0;
+        installBtn.Click += (s, e) =>
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = installerPath,
+                    UseShellExecute = true
+                });
+                Application.Exit();
+            }
+            catch { }
+        };
+        
+        var laterBtn = new Button
+        {
+            Text = "Later",
+            Font = new Font("Segoe UI", 9),
+            Location = new Point(145, 120),
+            Size = new Size(70, 35),
+            BackColor = Color.FromArgb(240, 240, 240),
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        laterBtn.FlatAppearance.BorderSize = 0;
+        laterBtn.Click += (s, e) => dialog.Close();
+        
+        var folderBtn = new Button
+        {
+            Text = "Open Folder",
+            Font = new Font("Segoe UI", 8),
+            Location = new Point(230, 120),
+            Size = new Size(90, 35),
+            BackColor = Color.FromArgb(240, 240, 240),
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        folderBtn.FlatAppearance.BorderSize = 0;
+        folderBtn.Click += (s, e) =>
+        {
+            try
+            {
+                Process.Start("explorer.exe", $"/select,\"{installerPath}\"");
+            }
+            catch { }
+        };
+        
+        dialog.Controls.AddRange(new Control[] { titleLabel, infoLabel, noteLabel, installBtn, laterBtn, folderBtn });
+        dialog.ShowDialog();
+    }
+    
+    // Relay Server Methods
+    private static string GenerateSessionCode()
+    {
+        var words = new[] { "WOLF", "LION", "BEAR", "HAWK", "TIGER", "EAGLE", "SHARK", "COBRA", "RAVEN", "PANDA" };
+        var random = new Random();
+        var word = words[random.Next(words.Length)];
+        var number = random.Next(1000, 9999);
+        return $"{word}-{number}";
+    }
+    
+    private static async Task ConnectToRelay()
+    {
+        // Always generate session code
+        _sessionCode = GenerateSessionCode();
+        
+        try
+        {
+            _relayClient = new ClientWebSocket();
+            
+            var uri = new Uri(RelayServerUrl);
+            await _relayClient.ConnectAsync(uri, _cts!.Token);
+            
+            // Register as PC
+            var registerMsg = new
+            {
+                type = "register",
+                clientType = "pc",
+                sessionCode = _sessionCode,
+                pcName = Environment.MachineName
+            };
+            
+            var json = JsonSerializer.Serialize(registerMsg);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            await _relayClient.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
+            
+            _relayConnected = true;
+            Log($"Connected to relay: {_sessionCode}");
+            
+            // Start listening for relay messages
+            _ = Task.Run(() => RelayListenLoop(_cts.Token));
+        }
+        catch (Exception ex)
+        {
+            Log($"Relay connection failed: {ex.Message}");
+            _relayConnected = false;
+        }
+    }
+    
+    private static async Task RelayListenLoop(CancellationToken ct)
+    {
+        var buffer = new byte[4096];
+        
+        try
+        {
+            while (_relayClient != null && _relayClient.State == WebSocketState.Open && !ct.IsCancellationRequested)
+            {
+                var result = await _relayClient.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    break;
+                }
+                
+                var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                
+                // Handle messages from phone via relay
+                if (root.TryGetProperty("action", out var action))
+                {
+                    HandlePhoneCommand(action.GetString() ?? "");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                Log($"Relay listen error: {ex.Message}");
+            }
+        }
+        finally
+        {
+            _relayConnected = false;
+        }
+    }
+    
+    private static async Task SendRelayMessage(object data)
+    {
+        try
+        {
+            if (_relayClient == null || _relayClient.State != WebSocketState.Open) return;
+            
+            var msg = new { type = "relay", data };
+            var json = JsonSerializer.Serialize(msg);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            
+            await _relayClient.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Log($"Relay send error: {ex.Message}");
+        }
+    }
+    
+    private static void HandlePhoneCommand(string action)
+    {
+        // Handle commands received from phone via relay
+        switch (action)
+        {
+            case "play":
+            case "pause":
+                keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                break;
+            case "next":
+                keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MEDIA_NEXT_TRACK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                break;
+            case "prev":
+                keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MEDIA_PREV_TRACK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                break;
+            case "volup":
+                keybd_event(VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                break;
+            case "voldown":
+                keybd_event(VK_VOLUME_DOWN, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                break;
+        }
     }
 }
