@@ -171,6 +171,12 @@
           } else if(msg.type === 'pc_status'){
             useRelay = msg.online;
             updateConnStatus();
+          } else if(msg.type === 'relay' && msg.data && msg.data.action === 'volume_update'){
+            // Update volume from PC
+            const vol = msg.data.volume;
+            currentVolume = vol;
+            document.getElementById('volume-bar').style.width = vol + '%';
+            document.getElementById('volume-text').textContent = vol + '%';
           }
         };
         

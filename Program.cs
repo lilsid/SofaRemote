@@ -2057,15 +2057,42 @@ public class AudioHelper {{
     
     private static async Task ConnectToRelay()
     {
-        // Always generate session code
-        _sessionCode = GenerateSessionCode();
+        // Load or generate persistent session code
+        var sessionFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SofaRemote", "session.txt");
+        
+        if (File.Exists(sessionFile))
+        {
+            try
+            {
+                _sessionCode = File.ReadAllText(sessionFile).Trim();
+                Log($"Loaded existing session code: {_sessionCode}");
+            }
+            catch
+            {
+                _sessionCode = GenerateSessionCode();
+            }
+        }
+        else
+        {
+            _sessionCode = GenerateSessionCode();
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(sessionFile)!);
+                File.WriteAllText(sessionFile, _sessionCode);
+                Log($"Created new session code: {_sessionCode}");
+            }
+            catch { }
+        }
         
         try
         {
+            Log($"Attempting relay connection to {RelayServerUrl}");
             _relayClient = new ClientWebSocket();
             
             var uri = new Uri(RelayServerUrl);
             await _relayClient.ConnectAsync(uri, _cts!.Token);
+            
+            Log("Relay WebSocket connected, registering...");
             
             // Register as PC
             var registerMsg = new
@@ -2088,7 +2115,7 @@ public class AudioHelper {{
         }
         catch (Exception ex)
         {
-            Log($"Relay connection failed: {ex.Message}");
+            Log($"Relay connection failed: {ex.GetType().Name} - {ex.Message}");
             _relayConnected = false;
         }
     }
@@ -2152,30 +2179,134 @@ public class AudioHelper {{
     
     private static void HandlePhoneCommand(string action)
     {
-        // Handle commands received from phone via relay
+        // Send keyboard shortcuts to whatever window is currently focused
         switch (action)
         {
+            case "playpause":
             case "play":
             case "pause":
-                keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, UIntPtr.Zero);
-                keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                // Send Space key to play/pause video
+                SendKey(0x20); // VK_SPACE
                 break;
-            case "next":
-                keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, UIntPtr.Zero);
-                keybd_event(VK_MEDIA_NEXT_TRACK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            case "forward":
+                // Send L key to seek forward (standard video player shortcut)
+                SendKey(0x4C); // VK_L
                 break;
-            case "prev":
-                keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, UIntPtr.Zero);
-                keybd_event(VK_MEDIA_PREV_TRACK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            case "backward":
+                // Send J key to seek backward (standard video player shortcut)
+                SendKey(0x4A); // VK_J
                 break;
             case "volup":
                 keybd_event(VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
                 keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                _ = Task.Run(async () => { await Task.Delay(300); await SendVolumeUpdate(); });
                 break;
             case "voldown":
                 keybd_event(VK_VOLUME_DOWN, 0, 0, UIntPtr.Zero);
                 keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                _ = Task.Run(async () => { await Task.Delay(300); await SendVolumeUpdate(); });
+                break;
+            case "mute":
+                keybd_event(VK_VOLUME_MUTE, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                break;
+            case "fullscreen":
+                // Send F key for fullscreen (YouTube, most players)
+                SendKey(0x46); // VK_F
+                break;
+            case "exitfullscreen":
+                // Send Escape key
+                SendKey(0x1B); // VK_ESCAPE
                 break;
         }
+    }
+    
+    private static async Task SendVolumeUpdate()
+    {
+        try
+        {
+            var vol = await GetCurrentVolumeLevel();
+            if (vol >= 0)
+            {
+                await SendRelayMessage(new { action = "volume_update", volume = vol });
+            }
+        }
+        catch { }
+    }
+    
+    private static async Task<int> GetCurrentVolumeLevel()
+    {
+        try
+        {
+            var scriptPath = Path.Combine(Path.GetTempPath(), "get_volume.ps1");
+            var scriptContent = @"
+Add-Type -TypeDefinition @""
+using System.Runtime.InteropServices;
+[Guid(""""5CDF2C82-841E-4546-9722-0CF74078229A""""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int RegisterControlChangeNotify(System.IntPtr pNotify);
+  int UnregisterControlChangeNotify(System.IntPtr pNotify);
+  int GetChannelCount(out int pnChannelCount);
+  int SetMasterVolumeLevel(float fLevelDB, System.Guid pguidEventContext);
+  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);
+  int GetMasterVolumeLevel(out float pfLevelDB);
+  int GetMasterVolumeLevelScalar(out float pfLevel);
+}
+[Guid(""""A95664D2-9614-4F35-A746-DE8DB63617E6""""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+  int EnumAudioEndpoints(int dataFlow, int dwStateMask, out System.IntPtr ppDevices);
+  int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppEndpoint);
+}
+[Guid(""""D666063F-1587-4E43-81F1-B948E807363F""""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+  int Activate(ref System.Guid iid, int dwClsCtx, System.IntPtr pActivationParams, out object ppInterface);
+}
+[ComImport, Guid(""""BCDE0395-E52F-467C-8E3D-C4579291692E"""")]
+class MMDeviceEnumeratorComObject { }
+public class AudioHelper {
+  public static float GetVolume() {
+    var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 0, out dev);
+    var iid = typeof(IAudioEndpointVolume).GUID; object obj;
+    dev.Activate(ref iid, 0, System.IntPtr.Zero, out obj);
+    var vol = (IAudioEndpointVolume)obj; float level;
+    vol.GetMasterVolumeLevelScalar(out level); return level;
+  }
+}
+""@
+[Math]::Round([AudioHelper]::GetVolume() * 100)
+";
+            await File.WriteAllTextAsync(scriptPath, scriptContent);
+            
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "powershell",
+                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            process.Start();
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            
+            if (int.TryParse(output.Trim(), out var vol))
+            {
+                return vol;
+            }
+        }
+        catch { }
+        return -1;
+    }
+    
+    private static void SendKey(ushort vkCode)
+    {
+        keybd_event((byte)vkCode, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(50);
+        keybd_event((byte)vkCode, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
     }
 }
