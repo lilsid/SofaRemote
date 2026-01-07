@@ -20,6 +20,8 @@ using System.Text.Json;
 using System.Net.WebSockets;
 using System.Text;
 
+namespace SofaRemote { }
+
 static class Program
 {
   private const string AppVersion = "2025.12.27.1";
@@ -545,10 +547,12 @@ static class Program
             Visible = true
         };
         var menu = new ContextMenuStrip();
+        var openWebItem = new ToolStripMenuItem("Open Web Interface", null, (_, __) => { try { OpenWebInterface(); } catch { } });
         var showQrItem = new ToolStripMenuItem("Show QR", null, (_, __) => { try { ShowQrWindow(); } catch { } });
         var checkUpdateItem = new ToolStripMenuItem("Check for Updates", null, (_, __) => { Task.Run(() => CheckForUpdates(true)); });
         var restartAdminItem = new ToolStripMenuItem("Restart as Admin (Fix LAN)", null, (_, __) => { try { RestartElevated(); } catch { } });
         var exitItem = new ToolStripMenuItem("Exit", null, (_, __) => { try { _cts!.Cancel(); } catch { } Application.Exit(); });
+        menu.Items.Add(openWebItem);
         menu.Items.Add(showQrItem);
         menu.Items.Add(checkUpdateItem);
         menu.Items.Add(restartAdminItem);
@@ -559,7 +563,7 @@ static class Program
         {
           if (e.Button == MouseButtons.Left)
           {
-            try { ShowQrWindow(); } catch { }
+            try { OpenWebInterface(); } catch { }
           }
         };
 
@@ -711,6 +715,20 @@ static class Program
         }
             if (req.HttpMethod == "GET" && path == "/")
             {
+                // Show dashboard with server info
+                var pcName = Environment.MachineName;
+                var relayUrl = $"https://sofaremote-production.up.railway.app/remote?session={_sessionCode}";
+                var dashboardHtml = SofaRemote.DashboardHtml.GetHtml(AppVersion, pcName, _allUrls ?? new[] { "http://localhost:8080/" }, _sessionCode ?? "N/A", relayUrl);
+                var bytes = System.Text.Encoding.UTF8.GetBytes(dashboardHtml);
+                res.ContentType = "text/html; charset=utf-8";
+                res.StatusCode = 200;
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                return;
+            }
+            if (req.HttpMethod == "GET" && path == "/remote")
+            {
+                // Remote control interface
                 var bytes = System.Text.Encoding.UTF8.GetBytes(IndexHtml);
                 res.ContentType = "text/html; charset=utf-8";
                 res.StatusCode = 200;
@@ -718,10 +736,47 @@ static class Program
                 await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
                 return;
             }
+            if (req.HttpMethod == "GET" && path == "/qr")
+            {
+              // QR code page
+              var relayUrl = $"https://sofaremote-production.up.railway.app/remote?session={_sessionCode}";
+              var qrHtml = $@"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width,initial-scale=1'>
+  <title>SofaRemote QR Code</title>
+  <style>
+    body {{ font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
+    .container {{ text-align: center; padding: 40px; }}
+    h1 {{ margin-bottom: 20px; }}
+    .qr {{ background: white; padding: 20px; border-radius: 16px; display: inline-block; margin: 20px 0; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }}
+    .url {{ background: rgba(30, 41, 59, 0.6); padding: 16px; border-radius: 12px; margin: 20px auto; max-width: 400px; word-break: break-all; color: #60a5fa; font-family: monospace; font-size: 14px; }}
+    .btn {{ display: inline-block; padding: 12px 24px; background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; text-decoration: none; border-radius: 10px; margin-top: 20px; }}
+  </style>
+</head>
+<body>
+  <div class='container'>
+    <h1>📱 Scan to Connect</h1>
+    <div class='qr'><img src='/qr.png' width='300' height='300' alt='QR Code'/></div>
+    <div class='url'>{relayUrl}</div>
+    <div style='color: #94a3b8; margin-top: 16px;'>Session: {_sessionCode}</div>
+    <a href='/' class='btn'>← Back to Dashboard</a>
+  </div>
+</body>
+</html>";
+              var bytes = System.Text.Encoding.UTF8.GetBytes(qrHtml);
+              res.ContentType = "text/html; charset=utf-8";
+              res.StatusCode = 200;
+              res.ContentLength64 = bytes.Length;
+              await res.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+              return;
+            }
             if (req.HttpMethod == "GET" && path == "/qr.png")
             {
-              var url = _primaryUrl ?? "http://localhost:8080/";
-              var png = GenerateQrPng(url);
+              // Generate QR for relay URL (works from anywhere)
+              var relayUrl = $"https://sofaremote-production.up.railway.app/remote?session={_sessionCode}";
+              var png = GenerateQrPng(relayUrl);
               res.ContentType = "image/png";
               res.StatusCode = 200;
               res.ContentLength64 = png.Length;
@@ -1364,41 +1419,38 @@ public class AudioHelper {{
       return null;
     }
 
+    private static void OpenWebInterface()
+    {
+        try
+        {
+            // Always use localhost when opening on PC (more reliable than .local)
+            var url = "http://localhost:8080/";
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
+            Log($"Opened web interface: {url}");
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to open web interface: {ex.Message}");
+        }
+    }
+
     private static void ShowQrWindow()
     {
-      var url = _primaryUrl ?? "http://localhost:8080/";
-      
-      // Create relay URL for remote access
+      // Create relay URL for remote access (works from anywhere)
       var relayUrl = $"https://sofaremote-production.up.railway.app/remote?session={_sessionCode}";
       
-      // Create URL with session code for local network with relay fallback
-      var urlWithSession = url;
-      if (_sessionCode != null)
-      {
-        urlWithSession += $"?session={_sessionCode}";
-      }
-      
-      var ssid = GetCurrentWiFiSSID();
-      var password = ssid != null ? GetCurrentWiFiPassword(ssid) : null;
-      
-      // Generate QR for relay URL (works from anywhere)
+      // Generate QR code
       var relayPng = GenerateQrPng(relayUrl);
       using var relayMs = new MemoryStream(relayPng);
       using var relayImg = Image.FromStream(relayMs);
 
-      byte[]? wifiPng = null;
-      Image? wifiImg = null;
-      if (password != null)
-      {
-        var wifiQrData = $"WIFI:T:WPA;S:{ssid};P:{password};;";
-        wifiPng = GenerateQrPng(wifiQrData);
-        using var wifiMs = new MemoryStream(wifiPng);
-        wifiImg = Image.FromStream(wifiMs);
-      }
-
       var form = new Form
       {
-        Text = "Sofa Remote",
+        Text = "SofaRemote - Scan to Connect",
         FormBorderStyle = FormBorderStyle.FixedDialog,
         MaximizeBox = false,
         MinimizeBox = false,
@@ -1406,7 +1458,7 @@ public class AudioHelper {{
         TopMost = true,
         BackColor = Color.FromArgb(15, 23, 42),
         ForeColor = Color.FromArgb(241, 245, 249),
-        ClientSize = new Size(400, 650),
+        ClientSize = new Size(400, 550),
         Padding = new Padding(20)
       };
 
@@ -1419,7 +1471,7 @@ public class AudioHelper {{
       
       var title = new Label
       {
-        Text = "🛋️ Sofa Remote",
+        Text = "🛋️ SofaRemote",
         Font = new Font("Segoe UI", 16, FontStyle.Bold),
         ForeColor = Color.FromArgb(241, 245, 249),
         Dock = DockStyle.Fill,
@@ -1428,47 +1480,45 @@ public class AudioHelper {{
       titlePanel.Controls.Add(title);
       form.Controls.Add(titlePanel);
 
-      // WiFi network info
-      var wifiLabel = new Label
+      var subtitle = new Label
       {
-        Text = ssid != null ? $"📶 Network: {ssid}" : "📶 Connect to same WiFi network",
+        Text = "📱 Scan with your phone to connect from anywhere",
         Dock = DockStyle.Top,
         Height = 40,
-        Font = new Font("Segoe UI", 10, FontStyle.Bold),
-        ForeColor = Color.FromArgb(34, 197, 94),
-        BackColor = Color.FromArgb(20, 30, 48),
+        Font = new Font("Segoe UI", 10, FontStyle.Regular),
+        ForeColor = Color.FromArgb(148, 163, 184),
         TextAlign = ContentAlignment.MiddleCenter,
         Padding = new Padding(10)
       };
-      form.Controls.Add(wifiLabel);
+      form.Controls.Add(subtitle);
 
       // QR Code panel
       var qrPanel = new Panel
       {
         Dock = DockStyle.Top,
-        Height = 360,
+        Height = 280,
         BackColor = Color.White,
-        Padding = new Padding(10)
+        Padding = new Padding(15)
       };
       
       var qrPb = new PictureBox
       {
         Image = (Image)relayImg.Clone(),
         SizeMode = PictureBoxSizeMode.Zoom,
-        Dock = DockStyle.Fill,
-        Tag = "relay" // Show relay QR by default
+        Dock = DockStyle.Fill
       };
       qrPanel.Controls.Add(qrPb);
       form.Controls.Add(qrPanel);
 
       var qrLabel = new Label
       {
-        Text = "📱 Remote Access (Any Network)",
+        Text = "🌐 Works on any network • Cellular • WiFi • Anywhere",
         Dock = DockStyle.Top,
-        Height = 25,
-        Font = new Font("Segoe UI", 10, FontStyle.Bold),
-        ForeColor = Color.FromArgb(76, 175, 80),
-        TextAlign = ContentAlignment.MiddleCenter
+        Height = 30,
+        Font = new Font("Segoe UI", 9, FontStyle.Bold),
+        ForeColor = Color.FromArgb(34, 197, 94),
+        TextAlign = ContentAlignment.MiddleCenter,
+        Padding = new Padding(5)
       };
       form.Controls.Add(qrLabel);
 
@@ -1476,181 +1526,39 @@ public class AudioHelper {{
       {
         Text = relayUrl,
         Dock = DockStyle.Top,
-        Height = 45,
+        Height = 50,
         Font = new Font("Consolas", 8),
         ForeColor = Color.FromArgb(148, 163, 184),
-        TextAlign = ContentAlignment.MiddleCenter
+        TextAlign = ContentAlignment.MiddleCenter,
+        Padding = new Padding(10)
       };
       form.Controls.Add(urlLabel);
 
-      // WiFi QR slide-down panel (only if password available)
-      if (password != null && wifiImg != null)
+      var sessionLabel = new Label
       {
-        var wifiSlidePanel = new Panel
-        {
-          Dock = DockStyle.Top,
-          Height = 0, // Start collapsed
-          BackColor = Color.FromArgb(15, 23, 42),
-          Padding = new Padding(0)
-        };
+        Text = $"Session Code: {_sessionCode}",
+        Dock = DockStyle.Top,
+        Height = 30,
+        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+        ForeColor = Color.FromArgb(96, 165, 250),
+        TextAlign = ContentAlignment.MiddleCenter
+      };
+      form.Controls.Add(sessionLabel);
 
-        var wifiQrContainer = new Panel
-        {
-          Location = new Point(20, 10),
-          Size = new Size(360, 290),
-          BackColor = Color.FromArgb(20, 30, 48),
-          Padding = new Padding(10)
-        };
-
-        var wifiQrWhitePanel = new Panel
-        {
-          Location = new Point(30, 35),
-          Size = new Size(240, 240),
-          BackColor = Color.White,
-          Padding = new Padding(10)
-        };
-
-        var wifiQrPb = new PictureBox
-        {
-          Image = (Image)wifiImg.Clone(),
-          SizeMode = PictureBoxSizeMode.Zoom,
-          Dock = DockStyle.Fill
-        };
-        wifiQrWhitePanel.Controls.Add(wifiQrPb);
-
-        var wifiQrTitle = new Label
-        {
-          Text = "📶 WiFi Connection",
-          Location = new Point(10, 10),
-          Size = new Size(280, 25),
-          Font = new Font("Segoe UI", 10, FontStyle.Bold),
-          ForeColor = Color.FromArgb(34, 197, 94),
-          TextAlign = ContentAlignment.MiddleCenter
-        };
-        wifiQrContainer.Controls.Add(wifiQrTitle);
-        wifiQrContainer.Controls.Add(wifiQrWhitePanel);
-
-        wifiSlidePanel.Controls.Add(wifiQrContainer);
-        form.Controls.Add(wifiSlidePanel);
-
-        var toggleBtn = new Button
-        {
-          Text = "▼ Show WiFi QR",
-          Dock = DockStyle.Top,
-          Height = 40,
-          Font = new Font("Segoe UI", 10, FontStyle.Bold),
-          BackColor = Color.FromArgb(34, 197, 94),
-          ForeColor = Color.White,
-          FlatStyle = FlatStyle.Flat,
-          Cursor = Cursors.Hand,
-          Margin = new Padding(0, 5, 0, 5)
-        };
-        toggleBtn.FlatAppearance.BorderSize = 0;
-
-        var slideTimer = new System.Windows.Forms.Timer();
-        slideTimer.Interval = 10; // 100 FPS for ultra-smooth animation
-        var isExpanded = false;
-        var targetHeight = 310;
-        var animationProgress = 0.0;
-        var animationSpeed = 0.15; // Higher = faster (0.15 = ~400ms total)
-        
-        slideTimer.Tick += (_, __) =>
-        {
-          if (isExpanded)
-          {
-            // Animate towards 1.0
-            animationProgress += animationSpeed;
-            if (animationProgress >= 1.0)
-            {
-              animationProgress = 1.0;
-              slideTimer.Stop();
-            }
-            // Bounce easing: overshoots then settles
-            var eased = animationProgress < 0.5 
-              ? 2 * animationProgress * animationProgress 
-              : 1 - Math.Pow(-2 * animationProgress + 2, 2) / 2;
-            // Add subtle bounce at the end
-            if (animationProgress > 0.8)
-            {
-              var bounce = Math.Sin((animationProgress - 0.8) * Math.PI * 5) * 0.05;
-              eased += bounce;
-            }
-            wifiSlidePanel.Height = (int)(targetHeight * Math.Min(eased, 1.0));
-          }
-          else
-          {
-            // Animate towards 0.0
-            animationProgress -= animationSpeed;
-            if (animationProgress <= 0.0)
-            {
-              animationProgress = 0.0;
-              wifiSlidePanel.Height = 0;
-              slideTimer.Stop();
-            }
-            else
-            {
-              var eased = 1 - Math.Pow(1 - animationProgress, 3); // Ease out cubic
-              wifiSlidePanel.Height = (int)(targetHeight * eased);
-            }
-          }
-        };
-        
-        toggleBtn.Click += (_, __) =>
-        {
-          isExpanded = !isExpanded;
-          if (isExpanded)
-          {
-            animationProgress = 0.0;
-            toggleBtn.Text = "▲ Hide WiFi QR";
-            toggleBtn.BackColor = Color.FromArgb(239, 68, 68);
-          }
-          else
-          {
-            animationProgress = 1.0;
-            toggleBtn.Text = "▼ Show WiFi QR";
-            toggleBtn.BackColor = Color.FromArgb(34, 197, 94);
-          }
-          slideTimer.Start();
-        };
-        form.Controls.Add(toggleBtn);
-      }
-
-      var refreshBtn = new Button
+      var infoLabel = new Label
       {
-        Text = "🔄 Refresh IP",
+        Text = "💡 Bookmark the URL on your phone for quick access",
         Dock = DockStyle.Top,
         Height = 40,
-        Font = new Font("Segoe UI", 10, FontStyle.Bold),
-        BackColor = Color.FromArgb(25, 118, 210),
-        ForeColor = Color.White,
-        FlatStyle = FlatStyle.Flat,
-        Cursor = Cursors.Hand,
-        Margin = new Padding(0, 5, 0, 10)
-      };
-      refreshBtn.FlatAppearance.BorderSize = 0;
-      refreshBtn.Click += (_, __) =>
-      {
-        form.Controls.Clear();
-        form.Dispose();
-        ShowQrWindow();
-      };
-      form.Controls.Add(refreshBtn);
-
-      var instructionLabel = new Label
-      {
-        Text = password != null 
-          ? "Scan WiFi QR → Connect → Scan App QR\nPress ESC to close" 
-          : "Scan QR code or enter URL on your phone\nPress ESC to close",
-        Dock = DockStyle.Fill,
-        Font = new Font("Segoe UI", 9),
+        Font = new Font("Segoe UI", 9, FontStyle.Italic),
         ForeColor = Color.FromArgb(148, 163, 184),
-        TextAlign = ContentAlignment.TopCenter,
-        Padding = new Padding(0, 10, 0, 0)
+        TextAlign = ContentAlignment.MiddleCenter,
+        Padding = new Padding(10)
       };
-      form.Controls.Add(instructionLabel);
+      form.Controls.Add(infoLabel);
 
       form.KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) form.Close(); };
-      form.Show();
+      form.ShowDialog();
     }
 
     private static void RestartElevated()
@@ -2189,12 +2097,12 @@ public class AudioHelper {{
                 SendKey(0x20); // VK_SPACE
                 break;
             case "forward":
-                // Send L key to seek forward (standard video player shortcut)
-                SendKey(0x4C); // VK_L
+                // Send Right arrow to seek forward
+                SendKey(VK_RIGHT);
                 break;
             case "backward":
-                // Send J key to seek backward (standard video player shortcut)
-                SendKey(0x4A); // VK_J
+                // Send Left arrow to seek backward
+                SendKey(VK_LEFT);
                 break;
             case "volup":
                 keybd_event(VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
