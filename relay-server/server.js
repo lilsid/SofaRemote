@@ -26,6 +26,12 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
+  } else if (url.pathname === '/select') {
+    // Serve the PC selector page
+    const htmlPath = path.join(__dirname, 'select.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
   } else if (url.pathname === '/remote') {
     // Serve the remote control interface
     const session = url.searchParams.get('session');

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Select PC - Sofa Remote</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: 'Segoe UI', Arial, sans-serif; 
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: #f1f5f9;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container { max-width: 500px; margin: 0 auto; }
+    h1 { 
+      text-align: center; 
+      margin: 30px 0;
+      font-size: 28px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #94a3b8;
+    }
+    .pc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .pc-card {
+      background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+    }
+    .pc-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
+      border-color: #3b82f6;
+    }
+    .pc-card:active {
+      transform: scale(0.98);
+    }
+    .pc-name {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #f1f5f9;
+    }
+    .pc-session {
+      font-size: 14px;
+      color: #94a3b8;
+      font-family: 'Courier New', monospace;
+      margin-bottom: 4px;
+    }
+    .pc-status {
+      font-size: 12px;
+      color: #10b981;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pc-status::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: #10b981;
+      border-radius: 50%;
+      display: inline-block;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+    }
+    .no-pcs {
+      text-align: center;
+      padding: 60px 20px;
+      color: #94a3b8;
+    }
+    .no-pcs-icon {
+      font-size: 64px;
+      margin-bottom: 20px;
+      opacity: 0.5;
+    }
+    .refresh-btn {
+      background: linear-gradient(135deg, #1976d2, #1565c0);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 24px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 20px;
+      width: 100%;
+      box-shadow: 0 4px 12px rgba(25, 118, 210, 0.4);
+    }
+    .refresh-btn:active {
+      transform: scale(0.96);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎮 Select Your PC</h1>
+    <div id="loading" class="loading">
+      <div>Loading available PCs...</div>
+    </div>
+    <div id="pc-list" class="pc-list" style="display:none;"></div>
+    <div id="no-pcs" class="no-pcs" style="display:none;">
+      <div class="no-pcs-icon">💤</div>
+      <div>No PCs are currently online</div>
+      <div style="margin-top: 12px; font-size: 14px;">Make sure SofaRemote is running on your PC</div>
+      <button class="refresh-btn" onclick="loadPCs()">🔄 Refresh</button>
+    </div>
+  </div>
+
+  <script>
+    async function loadPCs() {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('pc-list').style.display = 'none';
+      document.getElementById('no-pcs').style.display = 'none';
+
+      try {
+        const response = await fetch('/stats');
+        const data = await response.json();
+        
+        const activePCs = data.sessions.filter(s => s.pcName && s.pcName !== 'Unknown PC');
+        
+        document.getElementById('loading').style.display = 'none';
+        
+        if (activePCs.length === 0) {
+          document.getElementById('no-pcs').style.display = 'block';
+        } else {
+          const listEl = document.getElementById('pc-list');
+          listEl.style.display = 'flex';
+          listEl.innerHTML = activePCs.map(pc => `
+            <a href="/remote?session=${pc.code}" class="pc-card">
+              <div class="pc-name">🖥️ ${pc.pcName}</div>
+              <div class="pc-session">Session: ${pc.code}</div>
+              <div class="pc-status">Online</div>
+            </a>
+          `).join('');
+        }
+      } catch (err) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('no-pcs').style.display = 'block';
+        console.error('Failed to load PCs:', err);
+      }
+    }
+
+    // Auto-refresh every 3 seconds
+    loadPCs();
+    setInterval(loadPCs, 3000);
+  </script>
+</body>
+</html>
