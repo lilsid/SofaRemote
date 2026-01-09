@@ -73,10 +73,6 @@ const server = http.createServer((req, res) => {
     
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ pcs: userPCs }));
-      }))
-    };
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(stats, null, 2));
   } else {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(`
