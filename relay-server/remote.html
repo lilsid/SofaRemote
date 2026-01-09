@@ -52,8 +52,9 @@
     .volume-text{font-size:16px;font-weight:700;min-width:42px;text-align:center;color:#42a5f5;text-shadow:0 2px 4px rgba(0,0,0,0.3);background:rgba(0,0,0,0.2);padding:4px 8px;border-radius:8px}
     .status{margin-top:16px;text-align:center;color:var(--muted);font-size:12px;transition:color 0.3s,transform 0.3s;min-height:18px;display:none}
     .status.success{color:var(--success);transform:scale(1.05)}
-    .switch-pc-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:rgba(25,118,210,0.1);border:1px solid rgba(25,118,210,0.3);color:#42a5f5;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;text-decoration:none;margin:0 auto 20px;justify-content:center}
-    .switch-pc-btn:active{transform:scale(0.95);background:rgba(25,118,210,0.2)}
+    .switch-pc-btn{position:fixed;top:16px;right:16px;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(30,41,59,0.9);border:1px solid rgba(66,165,245,0.3);color:#94a3b8;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;transition:all 0.2s;text-decoration:none;z-index:100;backdrop-filter:blur(8px);box-shadow:0 2px 8px rgba(0,0,0,0.3)}
+    .switch-pc-btn:active{transform:scale(0.92);background:rgba(30,41,59,1);color:#42a5f5}
+    .switch-pc-btn .icon{font-size:14px}
     .page{animation:fadeIn 0.4s ease-out}
     @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
     @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(0.95)}}
@@ -86,8 +87,6 @@
         <div>Sofa Remote</div>
       </div>
       
-      <a href='#' id='switch-pc-btn' class='switch-pc-btn' style='display:none'>← Switch PC</a>
-      
       <div class='grid'>
         <button id='fullscreen' class='tile' aria-label='Enter Fullscreen'><div class='icon'>⛶</div><div class='label'>Enter Full</div></button>
         <button id='exitfullscreen' class='tile' aria-label='Exit Fullscreen'><div class='icon'>⎋</div><div class='label'>Exit Full</div></button>
@@ -116,6 +115,11 @@
         <span id='conn-text'>Connecting...</span>
       </div>
     </div>
+    
+    <a href='#' id='switch-pc-btn' class='switch-pc-btn' style='display:none'>
+      <span class='icon'>⬅</span>
+      <span>PCs</span>
+    </a>
   </div>
 
   <div id='disconnected-overlay' class='disconnected-overlay'>
@@ -147,8 +151,14 @@
     const urlParams = new URLSearchParams(window.location.search);
     sessionCode = urlParams.get('session');
     
-    // Setup Switch PC button
-    const userId = localStorage.getItem('sofaRemoteUserId');
+    // Setup Switch PC button - get userId from URL or localStorage
+    let userId = urlParams.get('userId');
+    if(userId){
+      localStorage.setItem('sofaRemoteUserId', userId);
+    } else {
+      userId = localStorage.getItem('sofaRemoteUserId');
+    }
+    
     if(userId){
       const switchBtn = document.getElementById('switch-pc-btn');
       switchBtn.href = '/select?userId=' + encodeURIComponent(userId);

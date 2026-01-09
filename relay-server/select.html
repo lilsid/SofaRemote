@@ -166,7 +166,7 @@
           const listEl = document.getElementById('pc-list');
           listEl.style.display = 'flex';
           listEl.innerHTML = activePCs.map(pc => `
-            <a href="/remote?session=${pc.code}" class="pc-card">
+            <a href="/remote?session=${pc.code}&userId=${encodeURIComponent(userId)}" class="pc-card">
               <div class="pc-name">🖥️ ${pc.pcName}</div>
               <div class="pc-session">Session: ${pc.code}</div>
               <div class="pc-status">Online</div>
