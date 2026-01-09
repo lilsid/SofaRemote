@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 8080;
 // Store active sessions: { sessionCode: { pc: WebSocket, phones: [WebSocket] } }
 const sessions = new Map();
 
-// Store session metadata: { sessionCode: { pcName: string, connectedAt: Date } }
+// Store session metadata: { sessionCode: { pcName: string, connectedAt: Date, userId: string } }
 const sessionMeta = new Map();
 
 function getRemoteHTML(session) {
@@ -47,7 +47,32 @@ const server = http.createServer((req, res) => {
         code,
         pcName: meta.pcName,
         phoneCount: sessions.get(code)?.phones.length || 0,
+        connectedAt: meta.connectedAt,
+        userId: meta.userId
+      }))
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(stats, null, 2));
+  } else if (url.pathname === '/my-pcs') {
+    // Return only PCs belonging to the specified user ID
+    const userId = url.searchParams.get('userId');
+    if (!userId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'userId parameter required' }));
+      return;
+    }
+    
+    const userPCs = Array.from(sessionMeta.entries())
+      .filter(([code, meta]) => meta.userId === userId)
+      .map(([code, meta]) => ({
+        code,
+        pcName: meta.pcName,
+        phoneCount: sessions.get(code)?.phones.length || 0,
         connectedAt: meta.connectedAt
+      }));
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ pcs: userPCs }));
       }))
     };
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -122,8 +147,15 @@ wss.on('connection', (ws) => {
           sessions.set(sessionCode, { pc: null, phones: [] });
           sessionMeta.set(sessionCode, {
             pcName: msg.pcName || 'Unknown PC',
-            connectedAt: new Date()
+            connectedAt: new Date(),
+            userId: msg.userId || null
           });
+        }
+        
+        // Update userId if provided by PC
+        if (clientType === 'pc' && msg.userId) {
+          const meta = sessionMeta.get(sessionCode);
+          if (meta) meta.userId = msg.userId;
         }
         
         const session = sessions.get(sessionCode);

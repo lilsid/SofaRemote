@@ -123,16 +123,40 @@
   </div>
 
   <script>
+    // Get userId from URL parameter or localStorage
+    const urlParams = new URLSearchParams(window.location.search);
+    let userId = urlParams.get('userId');
+    
+    if (userId) {
+      // Store in localStorage for future visits
+      localStorage.setItem('sofaRemoteUserId', userId);
+    } else {
+      // Try to load from localStorage
+      userId = localStorage.getItem('sofaRemoteUserId');
+    }
+    
+    if (!userId) {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('no-pcs').innerHTML = `
+        <div class="no-pcs-icon">🔒</div>
+        <div>No User ID provided</div>
+        <div style="margin-top: 12px; font-size: 14px;">Please scan the QR code from your PC to access your devices</div>
+      `;
+      document.getElementById('no-pcs').style.display = 'block';
+    }
+
     async function loadPCs() {
+      if (!userId) return;
+      
       document.getElementById('loading').style.display = 'block';
       document.getElementById('pc-list').style.display = 'none';
       document.getElementById('no-pcs').style.display = 'none';
 
       try {
-        const response = await fetch('/stats');
+        const response = await fetch(`/my-pcs?userId=${encodeURIComponent(userId)}`);
         const data = await response.json();
         
-        const activePCs = data.sessions.filter(s => s.pcName && s.pcName !== 'Unknown PC');
+        const activePCs = data.pcs || [];
         
         document.getElementById('loading').style.display = 'none';
         
@@ -157,8 +181,10 @@
     }
 
     // Auto-refresh every 3 seconds
-    loadPCs();
-    setInterval(loadPCs, 3000);
+    if (userId) {
+      loadPCs();
+      setInterval(loadPCs, 3000);
+    }
   </script>
 </body>
 </html>
