@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Debug - SofaRemote Relay</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: 'Consolas', 'Courier New', monospace;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: #4fc3f7; margin-bottom: 20px; }
+    h2 { color: #81c784; margin-top: 30px; margin-bottom: 15px; font-size: 18px; }
+    .section { 
+      background: #252526; 
+      border: 1px solid #3e3e42;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #3e3e42;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .label { color: #9cdcfe; font-weight: 600; }
+    .value { color: #ce9178; }
+    .session-card {
+      background: #2d2d30;
+      border: 1px solid #3e3e42;
+      border-radius: 6px;
+      padding: 15px;
+      margin-bottom: 10px;
+    }
+    .session-header {
+      font-size: 16px;
+      color: #dcdcaa;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .online { color: #4ec9b0; }
+    .offline { color: #f48771; }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 10px 20px;
+      font-size: 14px;
+      cursor: pointer;
+      margin-right: 10px;
+      margin-top: 10px;
+    }
+    button:hover { background: #1177bb; }
+    input {
+      background: #3c3c3c;
+      border: 1px solid #3e3e42;
+      color: #d4d4d4;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-family: inherit;
+      margin-right: 10px;
+    }
+    pre {
+      background: #1e1e1e;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+      border: 1px solid #3e3e42;
+      margin-top: 10px;
+    }
+    .timestamp { color: #6a9955; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 SofaRemote Relay Debug</h1>
+    
+    <div class="section">
+      <h2>Server Stats</h2>
+      <div id="stats">Loading...</div>
+    </div>
+
+    <div class="section">
+      <h2>User ID Lookup</h2>
+      <div>
+        <input type="text" id="userId" placeholder="Enter User ID" style="width: 300px;">
+        <button onclick="lookupUser()">Lookup</button>
+        <button onclick="clearLookup()">Clear</button>
+      </div>
+      <div id="userLookup"></div>
+    </div>
+
+    <div class="section">
+      <h2>Active Sessions</h2>
+      <button onclick="loadSessions()">Refresh</button>
+      <div id="sessions" style="margin-top: 15px;">Loading...</div>
+    </div>
+  </div>
+
+  <script>
+    async function loadStats() {
+      try {
+        const res = await fetch('/stats');
+        const data = await res.json();
+        
+        document.getElementById('stats').innerHTML = `
+          <div class="info-row">
+            <span class="label">Active Sessions:</span>
+            <span class="value">${data.activeSessions}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Total Connections:</span>
+            <span class="value">${data.totalConnections}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Uptime:</span>
+            <span class="value">${Math.floor(data.uptime / 60)} minutes</span>
+          </div>
+        `;
+      } catch (err) {
+        document.getElementById('stats').innerHTML = `<span class="offline">Error: ${err.message}</span>`;
+      }
+    }
+
+    async function loadSessions() {
+      try {
+        const res = await fetch('/stats');
+        const data = await res.json();
+        
+        if (data.sessions.length === 0) {
+          document.getElementById('sessions').innerHTML = '<p class="offline">No active sessions</p>';
+          return;
+        }
+        
+        const html = data.sessions.map(s => `
+          <div class="session-card">
+            <div class="session-header">🖥️ ${s.pcName}</div>
+            <div class="info-row">
+              <span class="label">Session Code:</span>
+              <span class="value">${s.code}</span>
+            </div>
+            <div class="info-row">
+              <span class="label">User ID:</span>
+              <span class="value">${s.userId || '<span class="offline">NULL</span>'}</span>
+            </div>
+            <div class="info-row">
+              <span class="label">Connected Phones:</span>
+              <span class="value">${s.phoneCount}</span>
+            </div>
+            <div class="info-row">
+              <span class="label">Connected At:</span>
+              <span class="timestamp">${new Date(s.connectedAt).toLocaleString()}</span>
+            </div>
+          </div>
+        `).join('');
+        
+        document.getElementById('sessions').innerHTML = html;
+      } catch (err) {
+        document.getElementById('sessions').innerHTML = `<span class="offline">Error: ${err.message}</span>`;
+      }
+    }
+
+    async function lookupUser() {
+      const userId = document.getElementById('userId').value.trim();
+      if (!userId) {
+        alert('Please enter a User ID');
+        return;
+      }
+      
+      try {
+        const res = await fetch(`/my-pcs?userId=${encodeURIComponent(userId)}`);
+        const data = await res.json();
+        
+        if (data.error) {
+          document.getElementById('userLookup').innerHTML = `<pre class="offline">${data.error}</pre>`;
+          return;
+        }
+        
+        if (data.pcs.length === 0) {
+          document.getElementById('userLookup').innerHTML = `
+            <pre class="offline">No PCs found for userId: ${userId}
+
+Possible reasons:
+1. PC is not running or not connected to relay
+2. PC has a different userId
+3. userId does not match
+
+Check the "Active Sessions" section above to see all connected PCs and their userIds.</pre>
+          `;
+          return;
+        }
+        
+        const html = `
+          <div style="margin-top: 15px;">
+            <p class="online">Found ${data.pcs.length} PC(s) for userId: ${userId}</p>
+            ${data.pcs.map(pc => `
+              <div class="session-card">
+                <div class="session-header">🖥️ ${pc.pcName}</div>
+                <div class="info-row">
+                  <span class="label">Session Code:</span>
+                  <span class="value">${pc.code}</span>
+                </div>
+                <div class="info-row">
+                  <span class="label">Connected Phones:</span>
+                  <span class="value">${pc.phoneCount}</span>
+                </div>
+                <div class="info-row">
+                  <span class="label">Status:</span>
+                  <span class="online">● Online</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+        document.getElementById('userLookup').innerHTML = html;
+      } catch (err) {
+        document.getElementById('userLookup').innerHTML = `<pre class="offline">Error: ${err.message}</pre>`;
+      }
+    }
+
+    function clearLookup() {
+      document.getElementById('userId').value = '';
+      document.getElementById('userLookup').innerHTML = '';
+    }
+
+    // Auto-refresh every 5 seconds
+    loadStats();
+    loadSessions();
+    setInterval(() => {
+      loadStats();
+      loadSessions();
+    }, 5000);
+  </script>
+</body>
+</html>

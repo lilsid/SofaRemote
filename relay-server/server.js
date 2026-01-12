@@ -26,6 +26,12 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
+  } else if (url.pathname === '/debug') {
+    // Serve the debug page
+    const htmlPath = path.join(__dirname, 'debug.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
   } else if (url.pathname === '/select') {
     // Serve the PC selector page
     const htmlPath = path.join(__dirname, 'select.html');
@@ -62,8 +68,20 @@ const server = http.createServer((req, res) => {
       return;
     }
     
+    // Debug logging
+    console.log(`[API] /my-pcs request for userId: ${userId}`);
+    console.log(`[API] Total sessions: ${sessionMeta.size}`);
+    sessionMeta.forEach((meta, code) => {
+      console.log(`  - ${code}: userId=${meta.userId}, pcName=${meta.pcName}, hasPC=${!!sessions.get(code)?.pc}`);
+    });
+    
     const userPCs = Array.from(sessionMeta.entries())
-      .filter(([code, meta]) => meta.userId === userId)
+      .filter(([code, meta]) => {
+        const hasPC = !!sessions.get(code)?.pc;
+        const matches = meta.userId === userId && hasPC;
+        console.log(`  Filter ${code}: userId match=${meta.userId === userId}, hasPC=${hasPC}, included=${matches}`);
+        return matches;
+      })
       .map(([code, meta]) => ({
         code,
         pcName: meta.pcName,
@@ -71,6 +89,7 @@ const server = http.createServer((req, res) => {
         connectedAt: meta.connectedAt
       }));
     
+    console.log(`[API] Returning ${userPCs.length} PCs for userId ${userId}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ pcs: userPCs }));
   } else {
@@ -148,13 +167,8 @@ wss.on('connection', (ws) => {
           });
         }
         
-        // Update userId if provided by PC
-        if (clientType === 'pc' && msg.userId) {
-          const meta = sessionMeta.get(sessionCode);
-          if (meta) meta.userId = msg.userId;
-        }
-        
         const session = sessions.get(sessionCode);
+        const meta = sessionMeta.get(sessionCode);
         
         if (clientType === 'pc') {
           // Disconnect old PC if exists
@@ -162,8 +176,20 @@ wss.on('connection', (ws) => {
             session.pc.close();
           }
           session.pc = ws;
-          sessionMeta.get(sessionCode).pcName = msg.pcName || 'Unknown PC';
-          console.log(`[PC] Registered: ${sessionCode} (${msg.pcName})`);
+          
+          // Update PC metadata
+          if (meta) {
+            meta.pcName = msg.pcName || 'Unknown PC';
+            // Only set userId if not already set, to keep the same link working
+            if (!meta.userId && msg.userId) {
+              meta.userId = msg.userId;
+              console.log(`[PC] Set userId for ${sessionCode}: ${msg.userId}`);
+            } else if (meta.userId && msg.userId && meta.userId !== msg.userId) {
+              console.log(`[PC] WARNING: userId mismatch for ${sessionCode}. Keeping original: ${meta.userId}, ignoring: ${msg.userId}`);
+            }
+          }
+          
+          console.log(`[PC] Registered: ${sessionCode} (${msg.pcName}) userId: ${meta?.userId || 'none'}`);
           ws.send(JSON.stringify({ type: 'registered', role: 'pc' }));
           
           // Notify all phones that PC is online
