@@ -3,7 +3,7 @@
 ; Start Menu shortcuts, optional desktop shortcut, and auto-start capability
 
 #define MyAppName "Sofa Remote"
-#define MyAppVersion "2025.12.27.1"
+#define MyAppVersion "2026.01.12.1"
 #define MyAppPublisher "Sofa Remote"
 #define MyAppURL "https://github.com/lilsid/SofaRemote"
 #define MyAppExeName "SofaRemote.exe"
