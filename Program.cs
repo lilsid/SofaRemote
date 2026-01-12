@@ -22,6 +22,44 @@ using System.Text;
 
 namespace SofaRemote { }
 
+// COM Interfaces for Windows Core Audio API
+[ComImport]
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume
+{
+    int NotImpl1();
+    int NotImpl2();
+    int GetChannelCount(out int pnChannelCount);
+    int SetMasterVolumeLevel(float fLevelDB, ref Guid pguidEventContext);
+    int SetMasterVolumeLevelScalar(float fLevel, ref Guid pguidEventContext);
+    int GetMasterVolumeLevel(out float pfLevelDB);
+    int GetMasterVolumeLevelScalar(out float pfLevel);
+}
+
+[ComImport]
+[Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice
+{
+    int Activate(ref Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+}
+
+[ComImport]
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator
+{
+    int NotImpl1();
+    int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppEndpoint);
+}
+
+[ComImport]
+[Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumerator
+{
+}
+
 static class Program
 {
   private const string AppVersion = "2025.12.27.1";
@@ -1440,8 +1478,11 @@ public class AudioHelper {{
 
     private static void ShowQrWindow()
     {
-      // Create relay URL for remote access (works from anywhere)
-      var relayUrl = $"https://sofaremote-production.up.railway.app/remote?session={_sessionCode}";
+      // Get or create unique user ID
+      var userId = GetOrCreateUserId();
+      
+      // Create relay URL for PC selector (works from anywhere)
+      var relayUrl = $"https://sofaremote-production.up.railway.app/select?userId={userId}";
       
       // Generate QR code
       var relayPng = GenerateQrPng(relayUrl);
@@ -1482,7 +1523,7 @@ public class AudioHelper {{
 
       var subtitle = new Label
       {
-        Text = "📱 Scan with your phone to connect from anywhere",
+        Text = "📱 Scan to see and control all your PCs",
         Dock = DockStyle.Top,
         Height = 40,
         Font = new Font("Segoe UI", 10, FontStyle.Regular),
@@ -1536,7 +1577,7 @@ public class AudioHelper {{
 
       var sessionLabel = new Label
       {
-        Text = $"Session Code: {_sessionCode}",
+        Text = $"PC: {Environment.MachineName} • Session: {_sessionCode}",
         Dock = DockStyle.Top,
         Height = 30,
         Font = new Font("Segoe UI", 10, FontStyle.Bold),
@@ -1547,7 +1588,7 @@ public class AudioHelper {{
 
       var infoLabel = new Label
       {
-        Text = "💡 Bookmark the URL on your phone for quick access",
+        Text = "💡 You'll only see your own PCs • Private & Secure",
         Dock = DockStyle.Top,
         Height = 40,
         Font = new Font("Segoe UI", 9, FontStyle.Italic),
@@ -1963,8 +2004,37 @@ public class AudioHelper {{
         return $"{word}-{number}";
     }
     
+    private static string GetOrCreateUserId()
+    {
+        var userIdFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SofaRemote", "user_id.txt");
+        
+        if (File.Exists(userIdFile))
+        {
+            try
+            {
+                return File.ReadAllText(userIdFile).Trim();
+            }
+            catch { }
+        }
+        
+        // Generate new user ID
+        var userId = Guid.NewGuid().ToString("N").Substring(0, 16).ToUpper();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(userIdFile)!);
+            File.WriteAllText(userIdFile, userId);
+            Log($"Created new user ID: {userId}");
+        }
+        catch { }
+        
+        return userId;
+    }
+    
     private static async Task ConnectToRelay()
     {
+        // Get or create user ID
+        var userId = GetOrCreateUserId();
+        
         // Load or generate persistent session code
         var sessionFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SofaRemote", "session.txt");
         
@@ -2008,7 +2078,8 @@ public class AudioHelper {{
                 type = "register",
                 clientType = "pc",
                 sessionCode = _sessionCode,
-                pcName = Environment.MachineName
+                pcName = Environment.MachineName,
+                userId = userId
             };
             
             var json = JsonSerializer.Serialize(registerMsg);
@@ -2064,6 +2135,20 @@ public class AudioHelper {{
         finally
         {
             _relayConnected = false;
+            
+            // Auto-reconnect after 3 seconds
+            if (!ct.IsCancellationRequested)
+            {
+                Log("Relay disconnected, reconnecting in 3 seconds...");
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(3000);
+                    if (!ct.IsCancellationRequested)
+                    {
+                        await ConnectToRelay();
+                    }
+                });
+            }
         }
     }
     
@@ -2087,6 +2172,7 @@ public class AudioHelper {{
     
     private static void HandlePhoneCommand(string action)
     {
+        Log($"Received command: {action}");
         // Send keyboard shortcuts to whatever window is currently focused
         switch (action)
         {
@@ -2107,12 +2193,12 @@ public class AudioHelper {{
             case "volup":
                 keybd_event(VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
                 keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-                _ = Task.Run(async () => { await Task.Delay(300); await SendVolumeUpdate(); });
+                _ = Task.Run(async () => { await Task.Delay(500); await SendVolumeUpdate(); });
                 break;
             case "voldown":
                 keybd_event(VK_VOLUME_DOWN, 0, 0, UIntPtr.Zero);
                 keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-                _ = Task.Run(async () => { await Task.Delay(300); await SendVolumeUpdate(); });
+                _ = Task.Run(async () => { await Task.Delay(500); await SendVolumeUpdate(); });
                 break;
             case "mute":
                 keybd_event(VK_VOLUME_MUTE, 0, 0, UIntPtr.Zero);
@@ -2136,79 +2222,41 @@ public class AudioHelper {{
             var vol = await GetCurrentVolumeLevel();
             if (vol >= 0)
             {
+                Log($"Sending volume update: {vol}%");
                 await SendRelayMessage(new { action = "volume_update", volume = vol });
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Log($"Volume update error: {ex.Message}");
+        }
     }
     
     private static async Task<int> GetCurrentVolumeLevel()
     {
-        try
+        return await Task.Run(() =>
         {
-            var scriptPath = Path.Combine(Path.GetTempPath(), "get_volume.ps1");
-            var scriptContent = @"
-Add-Type -TypeDefinition @""
-using System.Runtime.InteropServices;
-[Guid(""""5CDF2C82-841E-4546-9722-0CF74078229A""""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IAudioEndpointVolume {
-  int RegisterControlChangeNotify(System.IntPtr pNotify);
-  int UnregisterControlChangeNotify(System.IntPtr pNotify);
-  int GetChannelCount(out int pnChannelCount);
-  int SetMasterVolumeLevel(float fLevelDB, System.Guid pguidEventContext);
-  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);
-  int GetMasterVolumeLevel(out float pfLevelDB);
-  int GetMasterVolumeLevelScalar(out float pfLevel);
-}
-[Guid(""""A95664D2-9614-4F35-A746-DE8DB63617E6""""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDeviceEnumerator {
-  int EnumAudioEndpoints(int dataFlow, int dwStateMask, out System.IntPtr ppDevices);
-  int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppEndpoint);
-}
-[Guid(""""D666063F-1587-4E43-81F1-B948E807363F""""), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDevice {
-  int Activate(ref System.Guid iid, int dwClsCtx, System.IntPtr pActivationParams, out object ppInterface);
-}
-[ComImport, Guid(""""BCDE0395-E52F-467C-8E3D-C4579291692E"""")]
-class MMDeviceEnumeratorComObject { }
-public class AudioHelper {
-  public static float GetVolume() {
-    var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
-    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 0, out dev);
-    var iid = typeof(IAudioEndpointVolume).GUID; object obj;
-    dev.Activate(ref iid, 0, System.IntPtr.Zero, out obj);
-    var vol = (IAudioEndpointVolume)obj; float level;
-    vol.GetMasterVolumeLevelScalar(out level); return level;
-  }
-}
-""@
-[Math]::Round([AudioHelper]::GetVolume() * 100)
-";
-            await File.WriteAllTextAsync(scriptPath, scriptContent);
-            
-            var process = new Process
+            try
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "powershell",
-                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                }
-            };
-            process.Start();
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            
-            if (int.TryParse(output.Trim(), out var vol))
-            {
-                return vol;
+                var deviceEnumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                IMMDevice device;
+                deviceEnumerator.GetDefaultAudioEndpoint(0, 0, out device);
+                
+                var iid = typeof(IAudioEndpointVolume).GUID;
+                object obj;
+                device.Activate(ref iid, 0, IntPtr.Zero, out obj);
+                
+                var volumeEndpoint = (IAudioEndpointVolume)obj;
+                float level;
+                volumeEndpoint.GetMasterVolumeLevelScalar(out level);
+                
+                return (int)Math.Round(level * 100);
             }
-        }
-        catch { }
-        return -1;
+            catch
+            {
+                return -1;
+            }
+        });
     }
     
     private static void SendKey(ushort vkCode)
