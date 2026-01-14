@@ -91,6 +91,8 @@ static class Program
     private static string? _sessionCode;
     private static bool _relayConnected = false;
     private static bool _localServerRunning = false;
+    private static DateTime _lastRelayConnection = DateTime.MinValue;
+    private static int _reconnectAttempts = 0;
 
     private static readonly string IndexHtml = @"<!doctype html>
 <html>
@@ -607,6 +609,7 @@ static class Program
 
         Task.Run(() => RunServerAsync(_cts.Token));
         Task.Run(() => ConnectToRelay()); // Connect to relay server
+        Task.Run(() => RelayConnectionWatchdog(_cts.Token)); // Monitor relay connection
         Task.Run(() => CheckForUpdates(false)); // Check for updates on startup
         Application.Run();
 
@@ -2064,8 +2067,16 @@ public class AudioHelper {{
         
         try
         {
-            Log($"Attempting relay connection to {RelayServerUrl}");
+            // Dispose old client if exists
+            if (_relayClient != null)
+            {
+                try { _relayClient.Dispose(); } catch { }
+                _relayClient = null;
+            }
+            
+            Log($"Attempting relay connection to {RelayServerUrl} (attempt {_reconnectAttempts + 1})");
             _relayClient = new ClientWebSocket();
+            _relayClient.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
             
             var uri = new Uri(RelayServerUrl);
             await _relayClient.ConnectAsync(uri, _cts!.Token);
@@ -2087,15 +2098,29 @@ public class AudioHelper {{
             await _relayClient.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
             
             _relayConnected = true;
-            Log($"Connected to relay: {_sessionCode}");
+            _lastRelayConnection = DateTime.Now;
+            _reconnectAttempts = 0;
+            Log($"✓ Connected to relay: {_sessionCode}");
             
             // Start listening for relay messages
             _ = Task.Run(() => RelayListenLoop(_cts.Token));
         }
         catch (Exception ex)
         {
-            Log($"Relay connection failed: {ex.GetType().Name} - {ex.Message}");
+            _reconnectAttempts++;
+            var delay = Math.Min(_reconnectAttempts * 5, 30); // Progressive backoff, max 30s
+            Log($"Relay connection failed: {ex.Message} - Retrying in {delay}s...");
             _relayConnected = false;
+            
+            // Auto-retry after delay
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(delay * 1000, _cts.Token);
+                if (!_cts.Token.IsCancellationRequested)
+                {
+                    await ConnectToRelay();
+                }
+            });
         }
     }
     
@@ -2111,12 +2136,16 @@ public class AudioHelper {{
                 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    Log("Relay server closed connection");
                     break;
                 }
                 
                 var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
                 var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
+                
+                // Update last connection time
+                _lastRelayConnection = DateTime.Now;
                 
                 // Handle messages from phone via relay
                 if (root.TryGetProperty("action", out var action))
@@ -2125,29 +2154,94 @@ public class AudioHelper {{
                 }
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
+        }
         catch (Exception ex)
         {
             if (!ct.IsCancellationRequested)
             {
-                Log($"Relay listen error: {ex.Message}");
+                Log($"Relay connection lost: {ex.Message}");
             }
         }
         finally
         {
             _relayConnected = false;
             
-            // Auto-reconnect after 3 seconds
+            // Auto-reconnect after 5 seconds
             if (!ct.IsCancellationRequested)
             {
-                Log("Relay disconnected, reconnecting in 3 seconds...");
+                Log("Relay disconnected, reconnecting in 5 seconds...");
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(3000);
+                    await Task.Delay(5000, ct);
                     if (!ct.IsCancellationRequested)
                     {
                         await ConnectToRelay();
                     }
-                });
+                }, ct);
+            }
+        }
+    }
+    
+    private static async Task RelayConnectionWatchdog(CancellationToken ct)
+    {
+        // Wait for initial connection attempt
+        await Task.Delay(10000, ct);
+        
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                // Check connection health every 60 seconds
+                await Task.Delay(60000, ct);
+                
+                var timeSinceLastMessage = DateTime.Now - _lastRelayConnection;
+                var isStale = timeSinceLastMessage.TotalMinutes > 5;
+                var isDisconnected = _relayClient == null || _relayClient.State != WebSocketState.Open;
+                
+                if (isDisconnected || (!_relayConnected && _lastRelayConnection != DateTime.MinValue))
+                {
+                    Log($"[Watchdog] Relay disconnected - triggering reconnect");
+                    await ConnectToRelay();
+                }
+                else if (isStale)
+                {
+                    Log($"[Watchdog] No activity for {timeSinceLastMessage.TotalMinutes:F1} min - reconnecting");
+                    try 
+                    { 
+                        _relayClient?.Dispose(); 
+                        _relayClient = null;
+                        _relayConnected = false;
+                    } 
+                    catch { }
+                    await ConnectToRelay();
+                }
+                else if (_relayConnected)
+                {
+                    // Send periodic ping to keep connection alive
+                    try
+                    {
+                        var pingMsg = new { type = "ping" };
+                        var json = JsonSerializer.Serialize(pingMsg);
+                        var bytes = Encoding.UTF8.GetBytes(json);
+                        await _relayClient!.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[Watchdog] Ping failed: {ex.Message} - reconnecting");
+                        await ConnectToRelay();
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Log($"[Watchdog] Error: {ex.Message}");
             }
         }
     }
